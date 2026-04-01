@@ -425,7 +425,8 @@ def run_train_all_batteries(config: dict, project_root: Path):
             current_col='current_a',
             voltage_col='lv',
             status_col='state',
-            timestamp_col='ts'
+            timestamp_col='ts',
+            window_minutes=60.0  # Use 1-hour windows instead of 5-min to capture long-term decay
         )
 
         # Estimate

@@ -430,9 +430,10 @@ class SimpleTTECalculator:
               current_col: str = 'current_a',
               voltage_col: str = 'voltage_v',
               status_col: str = 'state',
-              timestamp_col: str = 'ts') -> None:
+              timestamp_col: str = 'ts',
+              window_minutes: float = 5.0) -> None:
         """Train the calculator from historical data"""
-        self.soc_decay.train(data_df, soc_col, current_col, voltage_col, status_col, timestamp_col)
+        self.soc_decay.train(data_df, soc_col, current_col, voltage_col, status_col, timestamp_col, window_minutes)
 
     def estimate_tte(self,
                      current_soc: float,
