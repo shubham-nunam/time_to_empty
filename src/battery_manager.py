@@ -36,6 +36,41 @@ class BatteryManager:
         self.patterns_dir.mkdir(parents=True, exist_ok=True)
         self.db = DatabaseManager(db_path)
 
+    def _create_default_decay_stats(self, default_rate: float) -> Tuple[Dict, Dict]:
+        """
+        Level 4 fallback: Create default decay statistics when no training data available.
+
+        Uses a conservative flat rate across all bins so TTE is still produced (but with low confidence).
+
+        Parameters:
+        -----------
+        default_rate : float
+            Default discharge rate (%SOC/min) from config
+
+        Returns:
+        --------
+        (discharge_stats, charge_stats) : Both populated with default conservative rates
+        """
+        # Create default stats for all (soc_window, load_class, current_range) combinations
+        default_stats = {}
+        soc_windows = range(0, 100, 5)  # 0, 5, 10, ..., 95
+        load_classes = ['idle', 'steady', 'cyclic', 'transient']
+        current_ranges = ['low', 'medium', 'high', 'very_high']
+
+        for soc_window in soc_windows:
+            for load_class in load_classes:
+                for current_range in current_ranges:
+                    key = (soc_window, load_class, current_range)
+                    default_stats[key] = {
+                        'rate_mean': default_rate,
+                        'rate_std': default_rate * 0.3,  # conservative std dev
+                        'rate_median': default_rate,
+                        'count': 0  # count=0 signals "default, not learned"
+                    }
+
+        # Return same defaults for both discharge and charge (conservative fallback)
+        return default_stats, default_stats
+
     def discover_batteries(self) -> Dict[str, Path]:
         """
         Auto-discover all battery files in data folder.
@@ -127,9 +162,15 @@ class BatteryManager:
         return pattern_dir
 
     def load_battery_patterns(self, battery_id: str, calculator_obj,
-                            label: str = "") -> bool:
+                            label: str = "", default_discharge_rate: Optional[float] = None) -> bool:
         """
-        Load patterns for a specific battery from SQLite database.
+        Load patterns for a specific battery from SQLite database with Level 4 fallback.
+
+        Fallback chain:
+        1. Try DB with battery_id + label
+        2. [FALLBACK-A] Try DB with battery_id + any label (in db.py)
+        3. [FALLBACK-B] Try DB with global fleet model (in db.py)
+        4. [FALLBACK-C] Seed with default rates from config
 
         Parameters:
         -----------
@@ -139,19 +180,34 @@ class BatteryManager:
             Calculator instance to load into
         label : str
             Optional label
+        default_discharge_rate : float
+            Default discharge rate (%SOC/min) for Level 4 fallback
 
         Returns:
         --------
-        bool : True if successful, False otherwise
+        bool : True if patterns found (from DB or Level 4 default), False if all fallbacks fail
         """
         try:
-            # Load from database
+            # Levels 1-3: Try database with fallback chain
             discharge_stats, charge_stats, metadata = self.db.load_patterns(battery_id, label)
 
             if discharge_stats is None or charge_stats is None:
-                print(f"[ERROR] [{battery_id}] Patterns not found in database (label: {label or 'default'})")
-                return False
+                # Level 4: Seed with default rates
+                if default_discharge_rate is not None and default_discharge_rate > 0:
+                    print(f"    [FALLBACK-C] [{battery_id}] Using hardcoded default rate ({default_discharge_rate}%/min)")
+                    discharge_stats, charge_stats = self._create_default_decay_stats(default_discharge_rate)
+                    # Mark as using defaults so confidence will be low
+                    if hasattr(calculator_obj, 'soc_decay') and calculator_obj.soc_decay is not None:
+                        calculator_obj.soc_decay.discharge_stats = discharge_stats
+                        calculator_obj.soc_decay.charge_stats = charge_stats
+                        calculator_obj.soc_decay.is_trained = True
+                    print(f"    [OK] [{battery_id}] Seeded with default rates (confidence will be low)")
+                    return True
+                else:
+                    print(f"[ERROR] [{battery_id}] Patterns not found in database (label: {label or 'default'})")
+                    return False
 
+            # DB lookup succeeded (Levels 1-3)
             # Restore discharge and charge stats to the soc_decay analyzer
             if hasattr(calculator_obj, 'soc_decay') and calculator_obj.soc_decay is not None:
                 calculator_obj.soc_decay.discharge_stats = discharge_stats

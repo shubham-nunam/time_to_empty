@@ -4,10 +4,10 @@
 
 execution:
   # Mode selector
-  mode: "train_all_batteries"           # Options: train_all_batteries, apply_battery
+  mode: "validate"           # Options: train_all_batteries, apply_battery, validate
 
   # Pattern label (e.g., month, version)
-  # Used when saving patterns to database
+  # Used when saving patterns to database, or loading for validation
   patterns_label: "september_2025"
 
   # Optional: Filter training data by month (faster training)
@@ -19,6 +19,10 @@ execution:
   # Format: "YYYY-MM" (e.g., "2025-03" for March 2025)
   # Leave empty to use all available data
   apply_month: ""                       # "" = all data, "2025-03" = March only
+
+  # Validation mode settings
+  # Used to validate accuracy of predictions against actual TTE
+  validate_month: ""                    # Filter validation data by month, or "" for all
 
 output:
   output_dir: output
@@ -32,6 +36,9 @@ database:
 tte_ttf:
   current_threshold_ma: 50.0
   ema_window_minutes: 20
+
+  # Fallback Level 2: minimum discharge rows for reliable training
+  min_discharge_rows: 100                  # warn if training data has fewer discharge rows
 
   # Session validation thresholds for TTE/TTF estimates
   # Medium confidence: relaxed gate (emit TTE early, but less certain)
@@ -53,3 +60,6 @@ tte_ttf:
   # Rolling window for average_usage_kw calculation (minutes)
   # Shows average power consumed during discharge in the rolling window
   usage_window_minutes: 30
+
+  # Fallback Level 4: default discharge rate when no training data or all fallbacks fail
+  default_discharge_rate_pct_per_min: 0.15  # conservative fleet average (%SOC/min)

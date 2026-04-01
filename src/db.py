@@ -152,7 +152,12 @@ class DatabaseManager:
 
     def load_patterns(self, battery_id: str, label: str = "") -> tuple[Optional[Dict], Optional[Dict], Optional[Dict]]:
         """
-        Load decay rate statistics from database.
+        Load decay rate statistics from database with fallback chain.
+
+        Fallback strategy:
+        1. Try exact match: battery_id + label
+        2. [FALLBACK-A] Try same battery_id with any label (ignore requested label)
+        3. [FALLBACK-B] Try global fleet model (battery_id = '__global__')
 
         Parameters:
         -----------
@@ -168,7 +173,7 @@ class DatabaseManager:
         conn = self._get_connection()
         cursor = conn.cursor()
 
-        # Load pattern data
+        # Try exact match first: battery_id + label
         cursor.execute("""
             SELECT phase, soc_window, load_class, current_range,
                    rate_mean, rate_std, rate_median, count
@@ -178,6 +183,34 @@ class DatabaseManager:
         """, (battery_id, label))
 
         rows = cursor.fetchall()
+        fallback_used = None
+
+        # Fallback A: Try without label (use any label for this battery)
+        if not rows and label != "":
+            cursor.execute("""
+                SELECT phase, soc_window, load_class, current_range,
+                       rate_mean, rate_std, rate_median, count
+                FROM battery_patterns
+                WHERE battery_id = ?
+                ORDER BY phase, soc_window, load_class, current_range
+            """, (battery_id,))
+            rows = cursor.fetchall()
+            if rows:
+                fallback_used = "A"
+
+        # Fallback B: Try global fleet model
+        if not rows:
+            cursor.execute("""
+                SELECT phase, soc_window, load_class, current_range,
+                       rate_mean, rate_std, rate_median, count
+                FROM battery_patterns
+                WHERE battery_id = '__global__'
+                ORDER BY phase, soc_window, load_class, current_range
+            """)
+            rows = cursor.fetchall()
+            if rows:
+                fallback_used = "B"
+
         if not rows:
             conn.close()
             return None, None, None
@@ -199,12 +232,33 @@ class DatabaseManager:
             elif row['phase'] == 'charge':
                 charge_stats[key] = stats
 
-        # Load metadata
-        cursor.execute("""
-            SELECT session_min_duration_minutes, session_min_energy_ah, tte_ttf_smoothing_factor
-            FROM battery_metadata
-            WHERE battery_id = ? AND label = ?
-        """, (battery_id, label))
+        # Load metadata (try to match the label used for patterns)
+        metadata_label = label
+        if fallback_used:
+            # For fallback cases, try to get metadata from the fallback source
+            if fallback_used == "A":
+                # Fallback A: Get metadata from any available label for this battery
+                cursor.execute("""
+                    SELECT session_min_duration_minutes, session_min_energy_ah, tte_ttf_smoothing_factor
+                    FROM battery_metadata
+                    WHERE battery_id = ?
+                    LIMIT 1
+                """, (battery_id,))
+            elif fallback_used == "B":
+                # Fallback B: Get metadata from global model
+                cursor.execute("""
+                    SELECT session_min_duration_minutes, session_min_energy_ah, tte_ttf_smoothing_factor
+                    FROM battery_metadata
+                    WHERE battery_id = '__global__'
+                    LIMIT 1
+                """)
+        else:
+            # Normal case: exact match
+            cursor.execute("""
+                SELECT session_min_duration_minutes, session_min_energy_ah, tte_ttf_smoothing_factor
+                FROM battery_metadata
+                WHERE battery_id = ? AND label = ?
+            """, (battery_id, label))
 
         meta_row = cursor.fetchone()
         metadata = None
@@ -216,6 +270,13 @@ class DatabaseManager:
             }
 
         conn.close()
+
+        # Log fallback usage
+        if fallback_used == "A":
+            print(f"    [FALLBACK-A] {battery_id}: label '{label}' not found, using any available label")
+        elif fallback_used == "B":
+            print(f"    [FALLBACK-B] {battery_id}: no battery-specific patterns, using global fleet model")
+
         return discharge_stats, charge_stats, metadata
 
     def battery_exists(self, battery_id: str, label: str = "") -> bool:

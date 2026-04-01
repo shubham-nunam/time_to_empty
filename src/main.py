@@ -19,8 +19,10 @@ import yaml
 import time
 import numpy as np
 import argparse
+import logging
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional
+from datetime import datetime
 
 import pandas as pd
 
@@ -29,11 +31,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent.parent / 'utils'))
 
 from tte_ttf_algorithm import TTETTFCalculator
-from pattern_manager import PatternManager
 from battery_manager import BatteryManager
-from data_splitter import DataSplitter
-from metrics_calculator import MetricsCalculator
-from comparison_reporter import ComparisonReporter
+from db import DatabaseManager
 from dto_classes import dto_ness_parquet
 
 
@@ -97,7 +96,7 @@ def preprocess_data(df):
     print("    [STATE] Determining charging/discharging/rest states...")
     df['pack_current_net'] = df['ic'] - df['id']
     df['state'] = get_load_status_vectorized(df['pack_current_net'].astype(float))
-    df['current_a'] = df['pack_current_net'].abs() / 1000.0  # convert mA → A
+    df['current_a'] = df['pack_current_net'].abs() / 1000.0  # convert mA -> A
 
     print(f"    [STATE] State distribution:")
     print(f"      - Charging: {(df['state'] == 'charging').sum()}")
@@ -197,318 +196,78 @@ def estimate_and_save(calculator: TTETTFCalculator, data_df: pd.DataFrame, confi
     return results_df
 
 
-def run_train_test_split_REMOVED(config: dict, data_df: pd.DataFrame, project_root: Path) -> Tuple[pd.DataFrame, pd.DataFrame]:
+
+def _build_global_fleet_model(db, label: str = "", min_count: int = 5) -> None:
     """
-    TRAIN_TEST_SPLIT mode: Split data by date, train on one period, test on another.
+    Build a global fleet model by aggregating patterns across all batteries.
+
+    This creates a '__global__' model as a cold-start fallback for batteries
+    with no training data.
 
     Parameters:
     -----------
-    config : dict
-        Configuration
-    data_df : pd.DataFrame
-        Full preprocessed data
-    project_root : Path
-        Project root directory
-
-    Returns:
-    --------
-    (train_results, test_results) : tuple of DataFrames
+    db : DatabaseManager
+        Database manager instance
+    label : str
+        Pattern label to aggregate
+    min_count : int
+        Minimum observation count for a pattern to be included in global model
     """
-    print("\n" + "="*80)
-    print("MODE: TRAIN_TEST_SPLIT")
-    print("="*80)
+    try:
+        conn = db._get_connection()
+        cursor = conn.cursor()
 
-    # Split data by date
-    exec_cfg = config['execution']
-    splitter = DataSplitter(data_df)
-    train_df, test_df = splitter.split_by_date(
-        exec_cfg['train_date_start'],
-        exec_cfg['train_date_end'],
-        exec_cfg['test_date_start'],
-        exec_cfg['test_date_end']
-    )
+        # Query all non-global patterns
+        cursor.execute("""
+            SELECT phase, soc_window, load_class, current_range,
+                   rate_median, count
+            FROM battery_patterns
+            WHERE battery_id != '__global__' AND label = ? AND count >= ?
+            ORDER BY phase, soc_window, load_class, current_range
+        """, (label, min_count))
 
-    # Train on first period
-    print(f"\n[TRAINING] Learning patterns from {exec_cfg['train_date_start']} to {exec_cfg['train_date_end']}...")
-    tte_cfg = config.get('tte_ttf', {})
-    calculator = TTETTFCalculator(
-        session_min_duration_minutes=tte_cfg.get('session_min_duration_minutes', 15.0),
-        session_min_energy_ah=tte_cfg.get('session_min_energy_ah', 1.0),
-        tte_ttf_smoothing_factor=tte_cfg.get('tte_ttf_smoothing_factor', 0.15),
-        current_thresholds=tte_cfg.get('current_thresholds_a', [0.5, 2.0, 5.0]),
-        session_high_confidence_minutes=tte_cfg.get('session_high_confidence_minutes', 15.0),
-        session_high_confidence_energy_ah=tte_cfg.get('session_high_confidence_energy_ah', 1.0)
-    )
+        rows = cursor.fetchall()
+        if not rows:
+            print(f"    [WARN] Not enough data to build global model (need count >= {min_count})")
+            conn.close()
+            return
 
-    print("    [TRAINING] Learning SOC decay patterns and load profiles from training data...")
-    calculator.train(
-        train_df,
-        soc_col='soc',
-        current_col='current_a',
-        voltage_col='lv',
-        status_col='state',
-        timestamp_col='ts'
-    )
+        # Aggregate by (phase, soc_window, load_class, current_range)
+        global_patterns = {}
+        for row in rows:
+            key = (row['phase'], row['soc_window'], row['load_class'], row['current_range'])
+            if key not in global_patterns:
+                global_patterns[key] = []
+            global_patterns[key].append(row['rate_median'])
 
-    # Estimate on both train and test
-    train_results = estimate_and_save(
-        calculator, train_df, config,
-        str(project_root / config['output']['output_dir'] / 'tte_ttf_train_results.csv'),
-        "Training"
-    )
+        # Compute weighted average of rate_median across all batteries
+        global_stats = {}
+        for key, rates in global_patterns.items():
+            phase, soc_window, load_class, current_range = key
+            global_stats[key] = {
+                'rate_median': float(np.median(rates)),
+                'rate_mean': float(np.mean(rates)),
+                'rate_std': float(np.std(rates)) if len(rates) > 1 else 0.0,
+                'count': len(rates)  # count = number of batteries contributing
+            }
 
-    test_results = estimate_and_save(
-        calculator, test_df, config,
-        str(project_root / config['output']['output_dir'] / 'tte_ttf_test_results.csv'),
-        "Testing"
-    )
+        # Split into discharge and charge
+        discharge_stats = {}
+        charge_stats = {}
+        for (phase, soc_window, load_class, current_range), stats in global_stats.items():
+            key = (soc_window, load_class, current_range)
+            if phase == 'discharge':
+                discharge_stats[key] = stats
+            elif phase == 'charge':
+                charge_stats[key] = stats
 
-    # Save patterns for later use
-    if exec_cfg.get('save_patterns', True):
-        pattern_mgr = PatternManager(str(project_root / config['output']['output_dir'] / 'patterns'))
-        pattern_mgr.save_patterns(calculator, exec_cfg.get('patterns_label', 'train_test_split'))
+        # Save global model
+        db.save_patterns('__global__', discharge_stats, charge_stats, label)
+        print(f"    [OK] Global fleet model saved ({len(discharge_stats)} discharge patterns)")
+        conn.close()
 
-    # Compare metrics
-    train_metrics = MetricsCalculator(train_results).compute_all()
-    test_metrics = MetricsCalculator(test_results).compute_all()
-
-    reporter = ComparisonReporter(str(project_root / config['output']['output_dir']))
-    comparison = reporter.compare_train_test(train_metrics, test_metrics, "Training", "Testing")
-    print(comparison)
-
-    # Save comparison
-    reporter.save_comparison_csv(train_results, test_results)
-
-    return train_results, test_results
-
-
-def run_train_only(config: dict, data_df: pd.DataFrame, project_root: Path) -> pd.DataFrame:
-    """
-    TRAIN_ONLY mode: Train on all data, save patterns.
-
-    Parameters:
-    -----------
-    config : dict
-        Configuration
-    data_df : pd.DataFrame
-        Full preprocessed data
-    project_root : Path
-        Project root directory
-
-    Returns:
-    --------
-    pd.DataFrame : Results
-    """
-    print("\n" + "="*80)
-    print("MODE: TRAIN_ONLY")
-    print("="*80)
-
-    print(f"\n[TRAINING] Learning patterns from all {len(data_df):,} samples...")
-    tte_cfg = config.get('tte_ttf', {})
-    calculator = TTETTFCalculator(
-        session_min_duration_minutes=tte_cfg.get('session_min_duration_minutes', 15.0),
-        session_min_energy_ah=tte_cfg.get('session_min_energy_ah', 1.0),
-        tte_ttf_smoothing_factor=tte_cfg.get('tte_ttf_smoothing_factor', 0.15),
-        current_thresholds=tte_cfg.get('current_thresholds_a', [0.5, 2.0, 5.0]),
-        session_high_confidence_minutes=tte_cfg.get('session_high_confidence_minutes', 15.0),
-        session_high_confidence_energy_ah=tte_cfg.get('session_high_confidence_energy_ah', 1.0)
-    )
-
-    print("    [TRAINING] Learning SOC decay patterns and load profiles...")
-    calculator.train(
-        data_df,
-        soc_col='soc',
-        current_col='current_a',
-        voltage_col='lv',
-        status_col='state',
-        timestamp_col='ts'
-    )
-
-    results_df = estimate_and_save(
-        calculator, data_df, config,
-        str(project_root / config['output']['output_dir'] / 'tte_ttf_results_full.csv'),
-        "Full Dataset"
-    )
-
-    # Save patterns
-    exec_cfg = config['execution']
-    if exec_cfg.get('save_patterns', True):
-        pattern_mgr = PatternManager(str(project_root / config['output']['output_dir'] / 'patterns'))
-        pattern_mgr.save_patterns(calculator, exec_cfg.get('patterns_label', 'train_only'))
-
-    return results_df
-
-
-def run_apply(config: dict, data_df: pd.DataFrame, project_root: Path) -> pd.DataFrame:
-    """
-    APPLY mode: Apply previously trained patterns to new data (no retraining).
-
-    Parameters:
-    -----------
-    config : dict
-        Configuration
-    data_df : pd.DataFrame
-        New preprocessed data
-    project_root : Path
-        Project root directory
-
-    Returns:
-    --------
-    pd.DataFrame : Results
-    """
-    print("\n" + "="*80)
-    print("MODE: APPLY")
-    print("="*80)
-
-    exec_cfg = config['execution']
-
-    # Find pattern path
-    pattern_path = exec_cfg.get('pattern_path')
-    if not pattern_path:
-        # Try to find latest pattern with label filter
-        pattern_mgr = PatternManager(str(project_root / config['output']['output_dir'] / 'patterns'))
-        pattern_path = pattern_mgr.get_latest_pattern(
-            exec_cfg.get('pattern_label_filter', '')
-        )
-        if not pattern_path:
-            raise FileNotFoundError("No patterns found. Train first with TRAIN_ONLY mode.")
-
-    print(f"\n[LOADING PATTERNS] From: {pattern_path}")
-
-    # Create calculator and load patterns
-    tte_cfg = config.get('tte_ttf', {})
-    calculator = TTETTFCalculator(
-        session_min_duration_minutes=tte_cfg.get('session_min_duration_minutes', 15.0),
-        session_min_energy_ah=tte_cfg.get('session_min_energy_ah', 1.0),
-        tte_ttf_smoothing_factor=tte_cfg.get('tte_ttf_smoothing_factor', 0.15),
-        current_thresholds=tte_cfg.get('current_thresholds_a', [0.5, 2.0, 5.0]),
-        session_high_confidence_minutes=tte_cfg.get('session_high_confidence_minutes', 15.0),
-        session_high_confidence_energy_ah=tte_cfg.get('session_high_confidence_energy_ah', 1.0)
-    )
-
-    pattern_mgr = PatternManager(str(project_root / config['output']['output_dir'] / 'patterns'))
-    if not pattern_mgr.load_patterns(pattern_path, calculator):
-        raise RuntimeError("Failed to load patterns")
-
-    print(f"\n[APPLYING] Estimating TTE/TTF on {len(data_df):,} new samples...")
-
-    results_df = estimate_and_save(
-        calculator, data_df, config,
-        str(project_root / config['output']['output_dir'] / 'tte_ttf_results_applied.csv'),
-        "Applied"
-    )
-
-    return results_df
-
-
-def run_monthly(config: dict, data_df: pd.DataFrame, project_root: Path) -> pd.DataFrame:
-    """
-    MONTHLY mode: Filter by month and process.
-
-    Parameters:
-    -----------
-    config : dict
-        Configuration
-    data_df : pd.DataFrame
-        Full preprocessed data
-    project_root : Path
-        Project root directory
-
-    Returns:
-    --------
-    pd.DataFrame : Results
-    """
-    print("\n" + "="*80)
-    print("MODE: MONTHLY")
-    print("="*80)
-
-    exec_cfg = config['execution']
-    month_filter = exec_cfg.get('month', '2025-09')
-
-    print(f"\n[FILTERING] Filtering to month {month_filter}...")
-    data_df['year_month'] = data_df['utc_time'].dt.strftime('%Y-%m')
-    rows_before = len(data_df)
-    data_df = data_df[data_df['year_month'] == month_filter].copy()
-    print(f"    Filtered {rows_before:,} -> {len(data_df):,} rows")
-    data_df = data_df.drop('year_month', axis=1)
-
-    tte_cfg = config.get('tte_ttf', {})
-    calculator = TTETTFCalculator(
-        session_min_duration_minutes=tte_cfg.get('session_min_duration_minutes', 15.0),
-        session_min_energy_ah=tte_cfg.get('session_min_energy_ah', 1.0),
-        tte_ttf_smoothing_factor=tte_cfg.get('tte_ttf_smoothing_factor', 0.15),
-        current_thresholds=tte_cfg.get('current_thresholds_a', [0.5, 2.0, 5.0]),
-        session_high_confidence_minutes=tte_cfg.get('session_high_confidence_minutes', 15.0),
-        session_high_confidence_energy_ah=tte_cfg.get('session_high_confidence_energy_ah', 1.0)
-    )
-
-    print("    [TRAINING] Learning SOC decay patterns and load profiles from data...")
-    calculator.train(
-        data_df,
-        soc_col='soc',
-        current_col='current_a',
-        voltage_col='lv',
-        status_col='state',
-        timestamp_col='ts'
-    )
-
-    results_df = estimate_and_save(
-        calculator, data_df, config,
-        str(project_root / config['output']['output_dir'] / f'tte_ttf_results_{month_filter}.csv'),
-        f"Month {month_filter}"
-    )
-
-    return results_df
-
-
-def run_full(config: dict, data_df: pd.DataFrame, project_root: Path) -> pd.DataFrame:
-    """
-    FULL mode: Process entire dataset.
-
-    Parameters:
-    -----------
-    config : dict
-        Configuration
-    data_df : pd.DataFrame
-        Full preprocessed data
-    project_root : Path
-        Project root directory
-
-    Returns:
-    --------
-    pd.DataFrame : Results
-    """
-    print("\n" + "="*80)
-    print("MODE: FULL")
-    print("="*80)
-
-    tte_cfg = config.get('tte_ttf', {})
-    calculator = TTETTFCalculator(
-        session_min_duration_minutes=tte_cfg.get('session_min_duration_minutes', 15.0),
-        session_min_energy_ah=tte_cfg.get('session_min_energy_ah', 1.0),
-        tte_ttf_smoothing_factor=tte_cfg.get('tte_ttf_smoothing_factor', 0.15),
-        current_thresholds=tte_cfg.get('current_thresholds_a', [0.5, 2.0, 5.0]),
-        session_high_confidence_minutes=tte_cfg.get('session_high_confidence_minutes', 15.0),
-        session_high_confidence_energy_ah=tte_cfg.get('session_high_confidence_energy_ah', 1.0)
-    )
-
-    print("    [TRAINING] Learning SOC decay patterns and load profiles from all data...")
-    calculator.train(
-        data_df,
-        soc_col='soc',
-        current_col='current_a',
-        voltage_col='lv',
-        status_col='state',
-        timestamp_col='ts'
-    )
-
-    results_df = estimate_and_save(
-        calculator, data_df, config,
-        str(project_root / config['output']['output_dir'] / 'tte_ttf_results_full.csv'),
-        "Full Dataset"
-    )
-
-    return results_df
+    except Exception as e:
+        print(f"    [ERROR] Failed to build global model: {e}")
 
 
 def run_train_all_batteries(config: dict, project_root: Path):
@@ -567,6 +326,12 @@ def run_train_all_batteries(config: dict, project_root: Path):
         print("[2] Preprocessing...")
         data_df = preprocess_data(data_df)
 
+        # Level 2 fallback: Check minimum discharge rows before training
+        discharge_rows = (data_df['state'] == 'discharging').sum()
+        min_discharge_rows = tte_cfg.get('min_discharge_rows', 100)
+        if discharge_rows < min_discharge_rows:
+            print(f"    [WARN] Only {discharge_rows} discharge rows — below minimum {min_discharge_rows} for reliable training")
+
         # Train
         print(f"[3] Training algorithm on {battery_id}...")
         calculator = TTETTFCalculator(
@@ -597,6 +362,10 @@ def run_train_all_batteries(config: dict, project_root: Path):
         # Save patterns
         print(f"[5] Saving patterns for {battery_id}...")
         battery_mgr.save_battery_patterns(battery_id, calculator, patterns_label)
+
+    # Build global fleet model from all trained batteries (for cold-start fallback)
+    print("\n[GLOBAL MODEL] Aggregating patterns across all batteries...")
+    _build_global_fleet_model(battery_mgr.db, patterns_label, min_count=5)
 
     print("\n" + "="*80)
     print("[SUCCESS] All Batteries Trained")
@@ -677,11 +446,15 @@ def run_apply_battery(config: dict, project_root: Path):
         calculator = TTETTFCalculator(
             session_min_duration_minutes=tte_cfg.get('session_min_duration_minutes', 15.0),
             session_min_energy_ah=tte_cfg.get('session_min_energy_ah', 1.0),
-            tte_ttf_smoothing_factor=tte_cfg.get('tte_ttf_smoothing_factor', 0.15)
+            tte_ttf_smoothing_factor=tte_cfg.get('tte_ttf_smoothing_factor', 0.15),
+            current_thresholds=tte_cfg.get('current_thresholds_a', [0.5, 2.0, 5.0]),
+            session_high_confidence_minutes=tte_cfg.get('session_high_confidence_minutes', 15.0),
+            session_high_confidence_energy_ah=tte_cfg.get('session_high_confidence_energy_ah', 1.0)
         )
 
-        if not battery_mgr.load_battery_patterns(battery_id, calculator, patterns_label):
-            print(f"    [WARN] Patterns not found for {battery_id} (skipping)")
+        default_rate = tte_cfg.get('default_discharge_rate_pct_per_min', 0.15)
+        if not battery_mgr.load_battery_patterns(battery_id, calculator, patterns_label, default_rate):
+            print(f"    [WARN] Patterns not found for {battery_id} and Level 4 fallback unavailable (skipping)")
             continue
 
         # Estimate
@@ -698,8 +471,691 @@ def run_apply_battery(config: dict, project_root: Path):
     print("="*80)
 
 
+def compute_actual_tte(results_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Compute actual TTE by merging short discharge sessions into continuous sessions.
+
+    Problem: State detection (charging/discharging/rest) can be noisy, creating many
+    short 20-second "sessions" with 0% SOC change. These are validation noise.
+
+    Solution: Merge consecutive discharge periods separated by <5 min rest/charging
+    into one continuous session.
+
+    Parameters:
+    -----------
+    results_df : pd.DataFrame
+        Results with columns: timestamp, status, soc, tte_hours
+
+    Returns:
+    --------
+    pd.DataFrame : With added columns:
+        - actual_tte_hours: actual time remaining until meaningful session ended
+        - error_hours: predicted_tte - actual_tte
+        - error_pct: (error / actual) * 100
+    """
+    results = results_df.copy()
+    results['actual_tte_hours'] = np.nan
+    results['error_hours'] = np.nan
+    results['error_pct'] = np.nan
+
+    # Sort by timestamp
+    results = results.sort_values('timestamp').reset_index(drop=True)
+
+    discharge_mask = results['status'] == 'discharging'
+    discharge_indices = results[discharge_mask].index.tolist()
+
+    if not discharge_indices:
+        return results
+
+    # Group discharge periods into continuous sessions (merge those < 5 min apart)
+    sessions = []  # List of (start_idx, end_idx, start_soc, end_soc, duration_hours)
+    current_session_start = discharge_indices[0]
+    current_session_start_soc = results.loc[current_session_start, 'soc']
+
+    for i in range(1, len(discharge_indices)):
+        prev_idx = discharge_indices[i-1]
+        curr_idx = discharge_indices[i]
+
+        time_gap_hours = (results.loc[curr_idx, 'timestamp'] - results.loc[prev_idx, 'timestamp']).total_seconds() / 3600.0
+
+        # If gap > 5 minutes, end current session
+        if time_gap_hours > 5/60:  # 5 minutes
+            # End session
+            session_end_idx = prev_idx
+            session_end_soc = results.loc[session_end_idx, 'soc']
+            session_duration = (results.loc[session_end_idx, 'timestamp'] - results.loc[current_session_start, 'timestamp']).total_seconds() / 3600.0
+            soc_change = current_session_start_soc - session_end_soc
+
+            # Only keep if meaningful duration and SOC change
+            if session_duration > 0.1 and soc_change > 0.5:
+                sessions.append((current_session_start, session_end_idx, current_session_start_soc, session_end_soc))
+
+            # Start new session
+            current_session_start = curr_idx
+            current_session_start_soc = results.loc[curr_idx, 'soc']
+
+    # Don't forget the last session
+    last_idx = discharge_indices[-1]
+    session_end_soc = results.loc[last_idx, 'soc']
+    session_duration = (results.loc[last_idx, 'timestamp'] - results.loc[current_session_start, 'timestamp']).total_seconds() / 3600.0
+    soc_change = current_session_start_soc - session_end_soc
+    if session_duration > 0.1 and soc_change > 0.5:
+        sessions.append((current_session_start, last_idx, current_session_start_soc, session_end_soc))
+
+    # For each valid session, compute actual_tte for all discharge rows in it
+    for session_start_idx, session_end_idx, session_start_soc, session_end_soc in sessions:
+        session_duration = (results.loc[session_end_idx, 'timestamp'] - results.loc[session_start_idx, 'timestamp']).total_seconds() / 3600.0
+        decay_rate = (session_start_soc - session_end_soc) / session_duration if session_duration > 0 else 0
+
+        if decay_rate <= 0:
+            continue
+
+        # For each discharge row in this session
+        for idx in discharge_indices:
+            if not (session_start_idx <= idx <= session_end_idx):
+                continue
+
+            row_ts = results.loc[idx, 'timestamp']
+            row_soc = results.loc[idx, 'soc']
+
+            # Time to session end
+            time_to_end = (results.loc[session_end_idx, 'timestamp'] - row_ts).total_seconds() / 3600.0
+
+            # Extrapolate from session end to 0%
+            extrapolated = session_end_soc / decay_rate if decay_rate > 0.001 else 0
+
+            actual_tte = max(0, time_to_end + extrapolated)
+            results.loc[idx, 'actual_tte_hours'] = actual_tte
+
+    # Compute errors
+    valid_mask = results['tte_hours'].notna() & results['actual_tte_hours'].notna()
+    results.loc[valid_mask, 'error_hours'] = \
+        results.loc[valid_mask, 'tte_hours'] - results.loc[valid_mask, 'actual_tte_hours']
+
+    # Percentage error
+    nonzero_actual = (results['actual_tte_hours'] > 0.001) & valid_mask
+    results.loc[nonzero_actual, 'error_pct'] = \
+        (results.loc[nonzero_actual, 'error_hours'] / results.loc[nonzero_actual, 'actual_tte_hours']) * 100.0
+
+    return results
+
+
+def compute_validation_metrics(results_df: pd.DataFrame) -> dict:
+    """
+    Compute comprehensive validation metrics including Gaussian distribution analysis.
+
+    Parameters:
+    -----------
+    results_df : pd.DataFrame
+        Results with columns: error_hours, tte_hours, ttf_hours, status, soc, confidence, ...
+
+    Returns:
+    --------
+    dict : Metrics including:
+        - error_distribution: mean, std, min, max, percentiles
+        - accuracy_metrics: MAE, RMSE, MAPE, coverage
+        - gaussian_analysis: normality test, sigma intervals
+        - stratified: by confidence, soc_range, current
+        - temporal_consistency: monotonicity violations
+    """
+    metrics = {}
+
+    # Filter to discharge rows with valid errors
+    discharge = results_df[results_df['status'] == 'discharging'].copy()
+    valid_errors = discharge[discharge['error_hours'].notna()]['error_hours']
+
+    if len(valid_errors) == 0:
+        return {"error": "No valid discharge errors to analyze"}
+
+    # ========== ERROR DISTRIBUTION ==========
+    metrics['error_distribution'] = {
+        'count': len(valid_errors),
+        'mean': float(valid_errors.mean()),
+        'std': float(valid_errors.std()),
+        'min': float(valid_errors.min()),
+        'max': float(valid_errors.max()),
+        'p5': float(valid_errors.quantile(0.05)),
+        'p25': float(valid_errors.quantile(0.25)),
+        'p50': float(valid_errors.quantile(0.50)),
+        'p75': float(valid_errors.quantile(0.75)),
+        'p95': float(valid_errors.quantile(0.95)),
+    }
+
+    # ========== GAUSSIAN ANALYSIS ==========
+    from scipy import stats
+
+    mean_err = valid_errors.mean()
+    std_err = valid_errors.std()
+
+    # Normality test
+    if len(valid_errors) > 20:
+        stat_val, p_value = stats.normaltest(valid_errors)
+        is_normal = p_value > 0.05
+    else:
+        stat_val, p_value = stats.shapiro(valid_errors)
+        is_normal = p_value > 0.05
+
+    metrics['gaussian_analysis'] = {
+        'is_normal': is_normal,
+        'normality_p_value': float(p_value),
+        'mean_error_hours': float(mean_err),
+        'std_dev_hours': float(std_err),
+        'mean_error_minutes': float(mean_err * 60),
+        'interval_1sigma': {
+            'low': float(mean_err - std_err),
+            'high': float(mean_err + std_err),
+            'coverage_pct': float((np.abs(valid_errors - mean_err) <= std_err).sum() / len(valid_errors) * 100)
+        },
+        'interval_2sigma': {
+            'low': float(mean_err - 2*std_err),
+            'high': float(mean_err + 2*std_err),
+            'coverage_pct': float((np.abs(valid_errors - mean_err) <= 2*std_err).sum() / len(valid_errors) * 100)
+        },
+        'interval_3sigma': {
+            'low': float(mean_err - 3*std_err),
+            'high': float(mean_err + 3*std_err),
+            'coverage_pct': float((np.abs(valid_errors - mean_err) <= 3*std_err).sum() / len(valid_errors) * 100)
+        }
+    }
+
+    # ========== ACCURACY METRICS ==========
+    valid_pred = discharge[(discharge['tte_hours'].notna()) & (discharge['actual_tte_hours'].notna())]
+
+    if len(valid_pred) > 0:
+        abs_errors = np.abs(valid_pred['error_hours'])
+        abs_pct_errors = np.abs(valid_pred['error_pct'].dropna())
+
+        mae = float(abs_errors.mean())
+        rmse = float(np.sqrt((valid_pred['error_hours'] ** 2).mean()))
+        mape = float(abs_pct_errors.mean()) if len(abs_pct_errors) > 0 else np.nan
+
+        metrics['accuracy_metrics'] = {
+            'MAE_hours': mae,
+            'MAE_minutes': mae * 60,
+            'RMSE_hours': rmse,
+            'MAPE_pct': mape,
+            'within_1h_pct': float((abs_errors <= 1.0).sum() / len(abs_errors) * 100),
+            'within_30min_pct': float((abs_errors <= 0.5).sum() / len(abs_errors) * 100),
+            'within_15min_pct': float((abs_errors <= 0.25).sum() / len(abs_errors) * 100),
+        }
+
+    # ========== CALIBRATION BY CONFIDENCE ==========
+    metrics['by_confidence'] = {}
+    for conf in ['high', 'medium', 'low']:
+        conf_data = discharge[(discharge['confidence'] == conf) & (discharge['error_hours'].notna())]
+        if len(conf_data) > 0:
+            errors = conf_data['error_hours']
+            abs_errors = np.abs(errors)
+            metrics['by_confidence'][conf] = {
+                'count': len(conf_data),
+                'MAE_hours': float(abs_errors.mean()),
+                'std_hours': float(errors.std()),
+                'mean_bias_hours': float(errors.mean()),
+            }
+
+    # ========== STRATIFIED BY SOC RANGE ==========
+    metrics['by_soc_range'] = {}
+    soc_bins = [(80, 100), (50, 80), (20, 50), (0, 20)]
+    for low, high in soc_bins:
+        soc_data = discharge[(discharge['soc'] >= low) & (discharge['soc'] < high) &
+                             (discharge['error_hours'].notna())]
+        if len(soc_data) > 0:
+            errors = soc_data['error_hours']
+            abs_errors = np.abs(errors)
+            metrics['by_soc_range'][f'{low}-{high}%'] = {
+                'count': len(soc_data),
+                'MAE_hours': float(abs_errors.mean()),
+                'std_hours': float(errors.std()),
+            }
+
+    # ========== TEMPORAL CONSISTENCY ==========
+    discharge_sorted = discharge.sort_values('timestamp')
+    discharge_valid = discharge_sorted[discharge_sorted['tte_hours'].notna()]
+
+    if len(discharge_valid) > 1:
+        time_diffs = discharge_valid['timestamp'].diff().dt.total_seconds() / 3600.0
+        tte_diffs = discharge_valid['tte_hours'].diff()
+
+        # Expected: tte_diffs ≈ -time_diffs (TTE decreases by time elapsed)
+        expected_decrease = -time_diffs
+
+        # Count monotonicity violations (TTE increased when it shouldn't)
+        violations = (tte_diffs > -time_diffs / 2).sum()  # Allow some tolerance
+        violation_pct = violations / len(tte_diffs) * 100 if len(tte_diffs) > 0 else 0
+
+        metrics['temporal_consistency'] = {
+            'total_rows': len(discharge_valid),
+            'monotonicity_violations': int(violations),
+            'violation_pct': float(violation_pct),
+            'mean_tte_change_rate': float(tte_diffs.mean() / time_diffs.mean()) if time_diffs.mean() > 0 else 0,
+        }
+
+    return metrics
+
+
+def generate_validation_charts(battery_id: str, results_df: pd.DataFrame, validation_dir: Path):
+    """
+    Generate visualization charts for validation results.
+
+    Creates:
+    1. Error distribution histogram with Gaussian fit
+    2. Box plots by confidence level and SOC range
+    3. Error over time scatter plot
+    4. Calibration curve (confidence vs actual error)
+    5. Summary statistics table
+    """
+    try:
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+        from scipy import stats
+    except ImportError:
+        print("    [WARN] matplotlib/seaborn not available, skipping charts")
+        return
+
+    validation_dir.mkdir(parents=True, exist_ok=True)
+
+    # Filter to discharge with valid errors
+    discharge = results_df[results_df['status'] == 'discharging'].copy()
+    valid_errors = discharge[discharge['error_hours'].notna()]['error_hours'].values
+
+    if len(valid_errors) == 0:
+        return
+
+    # Set style
+    sns.set_style("whitegrid")
+    plt.rcParams['figure.figsize'] = (12, 6)
+
+    # ========== Chart 1: Error Distribution with Gaussian Fit ==========
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.hist(valid_errors, bins=50, density=True, alpha=0.7, color='steelblue', edgecolor='black', label='Prediction errors')
+
+    # Fit Gaussian
+    mu, sigma = valid_errors.mean(), valid_errors.std()
+    x = np.linspace(valid_errors.min(), valid_errors.max(), 100)
+    gaussian = stats.norm.pdf(x, mu, sigma)
+    ax.plot(x, gaussian, 'r-', linewidth=2, label=f'Gaussian fit (μ={mu:.2f}, σ={sigma:.2f})')
+
+    ax.set_xlabel('Prediction Error (hours)', fontsize=11)
+    ax.set_ylabel('Density', fontsize=11)
+    ax.set_title(f'{battery_id} — Error Distribution', fontsize=13, fontweight='bold')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(validation_dir / f'01_error_distribution_{battery_id}.png', dpi=150)
+    plt.close(fig)
+
+    # ========== Chart 2: Error by Confidence Level ==========
+    fig, ax = plt.subplots(figsize=(10, 6))
+    confidence_data = []
+    confidence_labels = []
+    for conf in ['high', 'medium', 'low']:
+        conf_errors = discharge[(discharge['confidence'] == conf) & (discharge['error_hours'].notna())]['error_hours']
+        if len(conf_errors) > 0:
+            confidence_data.append(conf_errors)
+            confidence_labels.append(f'{conf.upper()}\n(n={len(conf_errors)})')
+
+    bp = ax.boxplot(confidence_data, labels=confidence_labels, patch_artist=True)
+    for patch, color in zip(bp['boxes'], ['lightgreen', 'lightyellow', 'lightcoral']):
+        patch.set_facecolor(color)
+    ax.axhline(y=0, color='red', linestyle='--', linewidth=1.5, alpha=0.7, label='Perfect prediction')
+    ax.set_ylabel('Prediction Error (hours)', fontsize=11)
+    ax.set_title(f'{battery_id} — Error by Confidence Level', fontsize=13, fontweight='bold')
+    ax.grid(True, alpha=0.3, axis='y')
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(validation_dir / f'02_error_by_confidence_{battery_id}.png', dpi=150)
+    plt.close(fig)
+
+    # ========== Chart 3: Error by SOC Range ==========
+    fig, ax = plt.subplots(figsize=(10, 6))
+    soc_data = []
+    soc_labels = []
+    soc_ranges = [(0, 20), (20, 50), (50, 80), (80, 100)]
+    for low, high in soc_ranges:
+        soc_errors = discharge[(discharge['soc'] >= low) & (discharge['soc'] < high) &
+                              (discharge['error_hours'].notna())]['error_hours']
+        if len(soc_errors) > 0:
+            soc_data.append(soc_errors)
+            soc_labels.append(f'{low}-{high}%\n(n={len(soc_errors)})')
+
+    bp = ax.boxplot(soc_data, labels=soc_labels, patch_artist=True)
+    colors = ['lightcoral', 'lightyellow', 'lightblue', 'lightgreen']
+    for patch, color in zip(bp['boxes'], colors):
+        patch.set_facecolor(color)
+    ax.axhline(y=0, color='red', linestyle='--', linewidth=1.5, alpha=0.7)
+    ax.set_ylabel('Prediction Error (hours)', fontsize=11)
+    ax.set_title(f'{battery_id} — Error by SOC Range', fontsize=13, fontweight='bold')
+    ax.grid(True, alpha=0.3, axis='y')
+    fig.tight_layout()
+    fig.savefig(validation_dir / f'03_error_by_soc_{battery_id}.png', dpi=150)
+    plt.close(fig)
+
+    # ========== Chart 4: Error Over Time ==========
+    fig, ax = plt.subplots(figsize=(14, 6))
+    discharge_sorted = discharge.sort_values('timestamp')
+    discharge_valid = discharge_sorted[discharge_sorted['error_hours'].notna()]
+
+    scatter = ax.scatter(discharge_valid['timestamp'], discharge_valid['error_hours'],
+                        c=discharge_valid['soc'], cmap='RdYlGn_r', alpha=0.5, s=10)
+    ax.axhline(y=0, color='red', linestyle='--', linewidth=2, label='Perfect prediction')
+    ax.set_xlabel('Time', fontsize=11)
+    ax.set_ylabel('Prediction Error (hours)', fontsize=11)
+    ax.set_title(f'{battery_id} — Error Over Time (colored by SOC)', fontsize=13, fontweight='bold')
+    cbar = plt.colorbar(scatter, ax=ax)
+    cbar.set_label('SOC (%)', fontsize=10)
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(validation_dir / f'04_error_over_time_{battery_id}.png', dpi=150)
+    plt.close(fig)
+
+    # ========== Chart 5: Calibration Curve ==========
+    fig, ax = plt.subplots(figsize=(10, 6))
+    confidence_bins = {'high': [], 'medium': [], 'low': []}
+    for conf in ['high', 'medium', 'low']:
+        conf_data = discharge[discharge['confidence'] == conf]
+        if len(conf_data) > 0:
+            abs_errors = np.abs(conf_data['error_hours'].dropna())
+            within_1h = (abs_errors <= 1.0).sum() / len(abs_errors) * 100 if len(abs_errors) > 0 else 0
+            confidence_bins[conf] = within_1h
+
+    confs = list(confidence_bins.keys())
+    within_1h_pcts = list(confidence_bins.values())
+    colors = ['green', 'orange', 'red']
+    bars = ax.bar(confs, within_1h_pcts, color=colors, alpha=0.7, edgecolor='black')
+    ax.set_ylabel('% Within ±1 Hour', fontsize=11)
+    ax.set_title(f'{battery_id} — Calibration (% Predictions Within ±1h)', fontsize=13, fontweight='bold')
+    ax.set_ylim(0, 100)
+    for bar, pct in zip(bars, within_1h_pcts):
+        height = bar.get_height()
+        ax.text(bar.get_x() + bar.get_width()/2., height,
+               f'{pct:.1f}%', ha='center', va='bottom', fontsize=11, fontweight='bold')
+    ax.grid(True, alpha=0.3, axis='y')
+    fig.tight_layout()
+    fig.savefig(validation_dir / f'05_calibration_{battery_id}.png', dpi=150)
+    plt.close(fig)
+
+    print(f"    [OK] Generated 5 validation charts")
+
+
+def print_validation_report(battery_id: str, metrics: dict, results_df: pd.DataFrame):
+    """Pretty-print validation metrics."""
+    print("\n" + "="*80)
+    print(f"  TTE/TTF VALIDATION REPORT — {battery_id}")
+    print("="*80)
+
+    if "error" in metrics:
+        print(f"  ⚠ {metrics['error']}")
+        return
+
+    # Summary
+    discharge = results_df[results_df['status'] == 'discharging']
+    valid_tte = discharge[discharge['tte_hours'].notna()]
+    valid_errors = discharge[discharge['error_hours'].notna()]
+
+    print(f"\n  Validation Data:")
+    print(f"    Total discharge rows:       {len(discharge):>10,}")
+    print(f"    Rows with TTE:              {len(valid_tte):>10,} ({100*len(valid_tte)/max(1,len(discharge)):.1f}%)")
+    print(f"    Rows with actual_tte:       {len(valid_errors):>10,} ({100*len(valid_errors)/max(1,len(discharge)):.1f}%)")
+
+    # Error distribution
+    if 'error_distribution' in metrics:
+        ed = metrics['error_distribution']
+        print(f"\n  ERROR DISTRIBUTION (predicted - actual):")
+        print(f"    Mean bias:          {ed['mean']:>+8.2f} hours ({ed['mean']*60:>+7.1f} min)")
+        print(f"    Std deviation:       {ed['std']:>8.2f} hours")
+        print(f"    Range:          [{ed['min']:>7.2f}, {ed['max']:>7.2f}] hours")
+        print(f"    Percentiles: p50={ed['p50']:>6.2f}h, p25={ed['p25']:>6.2f}h, p75={ed['p75']:>6.2f}h")
+
+    # Gaussian analysis
+    if 'gaussian_analysis' in metrics:
+        ga = metrics['gaussian_analysis']
+        normal_str = "[OK] Gaussian" if ga['is_normal'] else "[!] Non-normal"
+        print(f"\n  GAUSSIAN ANALYSIS:")
+        print(f"    Normality test (p>0.05):    {normal_str} (p={ga['normality_p_value']:.3f})")
+        print(f"    Mean +/- Std:               {ga['mean_error_hours']:>+7.2f} +/- {ga['std_dev_hours']:>6.2f} hours")
+        print(f"    68% within +/-1sigma:       [{ga['interval_1sigma']['low']:>7.2f}, {ga['interval_1sigma']['high']:>7.2f}] ({ga['interval_1sigma']['coverage_pct']:.1f}%)")
+        print(f"    95% within +/-2sigma:       [{ga['interval_2sigma']['low']:>7.2f}, {ga['interval_2sigma']['high']:>7.2f}] ({ga['interval_2sigma']['coverage_pct']:.1f}%)")
+
+    # Accuracy metrics
+    if 'accuracy_metrics' in metrics:
+        am = metrics['accuracy_metrics']
+        print(f"\n  ACCURACY METRICS:")
+        print(f"    MAE (Mean Absolute Error):   {am['MAE_hours']:>8.2f} hours ({am['MAE_minutes']:>6.1f} min)")
+        print(f"    RMSE:                        {am['RMSE_hours']:>8.2f} hours")
+        if not np.isnan(am['MAPE_pct']):
+            print(f"    MAPE:                        {am['MAPE_pct']:>8.1f}%")
+        print(f"    Within ±1 hour:              {am['within_1h_pct']:>8.1f}%")
+        print(f"    Within ±30 min:              {am['within_30min_pct']:>8.1f}%")
+        print(f"    Within ±15 min:              {am['within_15min_pct']:>8.1f}%")
+
+    # By confidence
+    if 'by_confidence' in metrics:
+        print(f"\n  BY CONFIDENCE LEVEL:")
+        for conf in ['high', 'medium', 'low']:
+            if conf in metrics['by_confidence']:
+                bc = metrics['by_confidence'][conf]
+                print(f"    {conf.upper():>7}: MAE={bc['MAE_hours']:>6.2f}h, bias={bc['mean_bias_hours']:>+6.2f}h, n={bc['count']:>6,}")
+
+    # By SOC range
+    if 'by_soc_range' in metrics:
+        print(f"\n  BY SOC RANGE:")
+        for soc_range, data in sorted(metrics['by_soc_range'].items()):
+            print(f"    {soc_range:>8}: MAE={data['MAE_hours']:>6.2f}h, n={data['count']:>6,}")
+
+    # Temporal consistency
+    if 'temporal_consistency' in metrics:
+        tc = metrics['temporal_consistency']
+        print(f"\n  TEMPORAL CONSISTENCY:")
+        print(f"    Monotonicity violations:     {tc['violation_pct']:>8.1f}% ({tc['monotonicity_violations']:>5,} / {tc['total_rows']:>6,})")
+        print(f"    Mean TTE change rate:        {tc['mean_tte_change_rate']:>8.2f} (ideal ~= -1.0)")
+
+    print("\n" + "="*80)
+
+
+def run_validate(config: dict, project_root: Path):
+    """
+    Validate TTE/TTF predictions by comparing with actual outcomes.
+
+    Requires:
+    1. Output CSV files from train_all_batteries or apply_battery mode
+    2. Patterns already trained and saved
+
+    Outputs to: output/validation/ folder
+    """
+    output_dir = project_root / config['output'].get('output_dir', 'output')
+    validation_dir = output_dir / 'validation'
+    validation_dir.mkdir(parents=True, exist_ok=True)
+
+    battery_mgr = BatteryManager(
+        data_dir=str(project_root / "data"),
+        patterns_dir=str(project_root / config['output'].get('training_data_dir', 'training_data')),
+        db_path=str(project_root / config['database'].get('path', 'battery_patterns.db'))
+    )
+
+    print("\n[VALIDATION] Starting TTE/TTF validation...")
+
+    batteries = battery_mgr.discover_batteries()
+    if not batteries:
+        print("[ERROR] No battery files found in data/ folder")
+        return
+
+    print(f"\n[DISCOVERED] {len(batteries)} batteries in data/:")
+    for battery_id, file_path in batteries.items():
+        print(f"  [OK] {battery_id}: {file_path.name}")
+
+    validate_month = config['execution'].get('validate_month', '')
+
+    for battery_id, data_file in batteries.items():
+        print(f"\n{'='*80}")
+        print(f"[VALIDATING] Battery: {battery_id}")
+        print(f"{'='*80}")
+
+        # Load data
+        print(f"[1] Loading {battery_id} data...")
+        try:
+            data_df = pd.read_parquet(data_file)
+            print(f"    Loaded {len(data_df):,} rows")
+
+            if validate_month:
+                print(f"    Filtering to month: {validate_month}...")
+                data_df['month'] = pd.to_datetime(data_df['timestamp'], unit='ms', utc=True).dt.strftime('%Y-%m')
+                data_df = data_df[data_df['month'] == validate_month]
+                print(f"    Filtered to {len(data_df):,} rows for {validate_month}")
+        except Exception as e:
+            print(f"    [ERROR] Error loading data: {e}")
+            continue
+
+        # Preprocess
+        print("[2] Preprocessing...")
+        try:
+            data_df = preprocess_data(data_df)
+        except Exception as e:
+            print(f"    [ERROR] Error preprocessing: {e}")
+            continue
+
+        # Load output CSV (try multiple filename patterns)
+        output_file = None
+        for pattern in [f'tte_ttf_results_{battery_id}.csv',
+                       f'tte_ttf_{battery_id}_applied.csv',
+                       f'tte_ttf_{battery_id}.csv']:
+            candidate = output_dir / pattern
+            if candidate.exists():
+                output_file = candidate
+                break
+
+        if output_file is None:
+            print(f"[3] Loading predictions...")
+            print(f"    [ERROR] No output file found for {battery_id}")
+            print(f"    Tried: tte_ttf_results_{battery_id}.csv")
+            print(f"           tte_ttf_{battery_id}_applied.csv")
+            print(f"           tte_ttf_{battery_id}.csv")
+            print(f"    Run train_all_batteries or apply_battery mode first")
+            continue
+
+        print(f"[3] Loading predictions from {output_file.name}...")
+        try:
+            results_df = pd.read_csv(output_file)
+            print(f"    Loaded {len(results_df):,} predictions")
+        except Exception as e:
+            print(f"    [ERROR] Error loading CSV: {e}")
+            continue
+
+        # Compute actual TTE
+        print("[4] Computing actual TTE...")
+        try:
+            results_df['timestamp'] = pd.to_datetime(results_df['timestamp'])
+            results_with_actual = compute_actual_tte(results_df)
+            valid_count = results_with_actual[results_with_actual['actual_tte_hours'].notna()].shape[0]
+            print(f"    Computed actual TTE for {valid_count:,} rows")
+        except Exception as e:
+            print(f"    [ERROR] Error computing actual TTE: {e}")
+            continue
+
+        # Compute metrics
+        print("[5] Computing validation metrics...")
+        try:
+            metrics = compute_validation_metrics(results_with_actual)
+        except Exception as e:
+            print(f"    [ERROR] Error computing metrics: {e}")
+            continue
+
+        # Print report
+        print_validation_report(battery_id, metrics, results_with_actual)
+
+        # Generate charts
+        print(f"[6] Generating validation charts...")
+        try:
+            generate_validation_charts(battery_id, results_with_actual, validation_dir)
+        except Exception as e:
+            print(f"    [WARN] Error generating charts: {e}")
+
+        # Save validation CSV to validation folder
+        val_output_file = validation_dir / f'validation_{battery_id}.csv'
+        print(f"[7] Saving validation CSV to validation/{val_output_file.name}...")
+        cols_to_save = ['timestamp', 'soc', 'status', 'tte_hours', 'actual_tte_hours',
+                       'error_hours', 'error_pct', 'confidence']
+        cols_exist = [c for c in cols_to_save if c in results_with_actual.columns]
+        try:
+            results_with_actual[cols_exist].to_csv(val_output_file, index=False)
+            print(f"    [OK] Saved {len(results_with_actual):,} validation rows")
+        except Exception as e:
+            print(f"    [ERROR] Error saving CSV: {e}")
+
+    print("\n" + "="*80)
+    print("[SUCCESS] All Batteries Validated")
+    print("="*80)
+
+
+def setup_logging(project_root: Path):
+    """
+    Configure logging to save output to logs/ folder with timestamped file.
+
+    Logs are saved to: logs/execution_YYYYMMDD_HHMMSS.log
+    Output also goes to console.
+
+    Parameters:
+    -----------
+    project_root : Path
+        Root directory of the project
+    """
+    log_dir = project_root / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_file = log_dir / f"execution_{timestamp}.log"
+
+    # Create logger
+    logger = logging.getLogger()
+    logger.setLevel(logging.DEBUG)
+
+    # File handler - logs everything
+    file_handler = logging.FileHandler(log_file)
+    file_handler.setLevel(logging.DEBUG)
+
+    # Console handler - logs everything (print statements redirected via sys.stdout)
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.DEBUG)
+
+    # Formatter
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    file_handler.setFormatter(formatter)
+    console_handler.setFormatter(formatter)
+
+    # Add handlers to logger
+    logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
+
+    # Redirect stdout to log file (tee-style output to both console and file)
+    class TeeOutput:
+        def __init__(self, log_file):
+            self.log_file = log_file
+            self.stdout = sys.stdout
+
+        def write(self, message):
+            self.stdout.write(message)
+            with open(self.log_file, 'a') as f:
+                f.write(message)
+
+        def flush(self):
+            self.stdout.flush()
+
+    sys.stdout = TeeOutput(log_file)
+
+    return log_file
+
+
 def main():
     """Main entry point - Multi-battery support only."""
+    # Setup logging (must be first)
+    project_root = Path(__file__).parent.parent
+    log_file = setup_logging(project_root)
+
+    print("\n" + "="*80)
+    print(f"TTE/TTF Pipeline Started - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"Log file: {log_file}")
+    print("="*80)
+
     # Load configuration
     config = load_config()
     project_root = Path(__file__).parent.parent
@@ -717,8 +1173,11 @@ def main():
     elif exec_mode == 'apply_battery':
         run_apply_battery(config, project_root)
 
+    elif exec_mode == 'validate':
+        run_validate(config, project_root)
+
     else:
-        raise ValueError(f"Unknown mode: {exec_mode}. Use: train_all_batteries, apply_battery")
+        raise ValueError(f"Unknown mode: {exec_mode}. Use: train_all_batteries, apply_battery, validate")
 
     print("\n" + "="*80)
     print("[SUCCESS] Complete")

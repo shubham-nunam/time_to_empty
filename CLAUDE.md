@@ -1,193 +1,293 @@
-# Claude Code Instructions
+# TTE/TTF Multi-Battery System — Project Rules
 
-## Documentation
-- **Do NOT document code/changes unless explicitly asked**
-- **ALL documentation files MUST be in `doc/` folder** (not in project root)
-- Keep documentation minimal and focused on operational instructions
-- Do NOT create markdown files in root directory—use `doc/` instead
+**Last Updated:** 2026-04-01
+
+## Project Overview
+
+Multi-battery Time To Empty (TTE) / Time To Full (TTF) estimation system using historical SOC decay patterns. Learns from parquet data files and stores patterns in SQLite.
+
+- **Two execution modes:** `train_all_batteries` (learn), `apply_battery` (inference)
+- **Core modules:** 5 files in `src/` directory
+- **Storage:** SQLite database (`battery_patterns.db`)
+- **Input:** Parquet files in `data/` directory
+- **Output:** CSV results in `output/` directory
+
+---
+
+## Documentation Standards
+
+- **Do NOT document code unless explicitly asked**
+- **ALL documentation goes in `doc/` folder** (NOT project root)
+- Keep operational, concise, focused on how to run the system
 - Examples:
   - ❌ WRONG: `QUICK_START.md` in root
-  - ✅ RIGHT: `doc/QUICK_START.md`
+  - ✅ RIGHT: `doc/SYSTEM_OVERVIEW.md` in doc folder
+
+**Current documentation:**
+- `doc/SYSTEM_OVERVIEW.md` — High-level system architecture and modes
+- `doc/CONFIGURATION.md` — All config.yaml settings with examples
+- `doc/OUTPUT_SCHEMA.md` — CSV output columns and interpretation
+- `doc/ALGORITHM.md` — Technical details of TTE/TTF calculation
+
+---
 
 ## File Management
-- Do NOT create more than 4 files in `src/` directory (currently: 7 core utilities)
-- Only create test/temporary files when absolutely necessary
-- Focus on modifying existing files rather than creating new ones
-- **ALL documentation files go in `doc/` folder** (see above)
 
-## Documentation Structure
+**Current `src/` structure (5 core files, as intended):**
 ```
-e:\time_to_empty\
-├── CLAUDE.md                          ← This file (project rules)
-├── config.yaml                        ← Configuration
-├── requirements.txt                   ← Dependencies
-├── doc/
-│   ├── QUICK_START.md                ← Quick reference (2 min read)
-│   ├── OPERATIONAL_GUIDE.md          ← Detailed procedures
-│   ├── WORKFLOW_DIAGRAM.txt          ← Visual diagrams
-│   ├── IMPLEMENTATION_SUMMARY.md     ← What was built
-│   └── ...
-├── src/
-│   ├── main.py                       ← Entry point
-│   ├── tte_ttf_algorithm.py          ← Core algorithm
-│   ├── pattern_manager.py            ← Pattern persistence
-│   ├── data_splitter.py              ← Train-test splitting
-│   ├── metrics_calculator.py         ← Metrics computation
-│   ├── comparison_reporter.py        ← Report generation
-│   └── __init__.py
-└── outputs/                          ← Generated results (auto-created)
+src/
+├── main.py                      ← Entry point (dispatch to modes)
+├── battery_manager.py           ← Multi-battery orchestration
+├── db.py                        ← SQLite pattern storage/retrieval
+├── tte_ttf_algorithm.py         ← Core TTE/TTF calculation
+└── __init__.py
 ```
 
-## Execution
+**Rule:** Avoid adding more files to `src/`. Keep focused on these 5 core utilities.
 
-### Main Entry Point
-- `src/main.py` is the primary execution entry point
-- Configuration is in `config.yaml`
-- Supports 5 execution modes (see below)
+---
 
-### Execution Modes (config.yaml)
+## Execution Modes
+
+All behavior controlled by `config.yaml`:
+
+### Mode 1: `train_all_batteries`
+**Purpose:** Learn SOC decay patterns from battery data
 
 ```yaml
 execution:
-  mode: "train_test_split"  # Options: train_test_split, train_only, apply, full, monthly
+  mode: "train_all_batteries"
+  patterns_label: "september_2025"     # Name for saved patterns
+  training_month: ""                   # "" = all data, "2025-09" = Sept only
 ```
 
-**Mode Details:**
+**Workflow:**
+1. Discovers all `.parquet` files in `data/` directory
+2. Trains LoadClassifier + SOCDecayAnalyzer for each battery
+3. Saves patterns to SQLite with given label
+4. Outputs: One CSV per battery with TTE/TTF estimates
 
-1. **train_test_split** - Split by date, learn from train period, validate on test period
-   - Use case: Initial algorithm validation, understand train-test performance gap
-   - Output: patterns/, train_results, test_results, comparison_report
-   - Config: train_date_start/end, test_date_start/end
+**Time:** ~10-30s depending on data volume
 
-2. **train_only** - Learn from all data, save patterns for later reuse
-   - Use case: Before production deployment, learning from full historical data
-   - Output: patterns/, full_results
-   - Config: patterns_label for naming saved patterns
+---
 
-3. **apply** - Apply previously trained patterns to new data (NO retraining)
-   - Use case: Production inference, processing new data with learned patterns
-   - Output: applied_results only
-   - Config: pattern_path (explicit) or pattern_label_filter (auto-find)
+### Mode 2: `apply_battery`
+**Purpose:** Apply previously trained patterns to new data (no retraining)
 
-4. **full** - Process entire dataset (legacy mode)
-   - Use case: Baseline analysis
-   - Output: full_results
-
-5. **monthly** - Filter by month and process
-   - Use case: Monthly reporting
-   - Config: execution.month = "YYYY-MM"
-
-### Pattern Persistence
-
-Trained patterns are saved to `outputs/patterns/<label>_<timestamp>/`:
-- `metadata.json` - Training timestamp, parameters, file locations
-- `soc_decay_analyzer.pkl` - Learned SOC decay rates by current/load class
-- `load_classifier.pkl` - Learned load classification model
-
-Use PatternManager to load/list patterns:
-```python
-from src.pattern_manager import PatternManager
-mgr = PatternManager("outputs/patterns")
-mgr.load_patterns(pattern_path, calculator)
-```
-
-## Data Loading Pipeline
-
-### Workflow (matching daily_ness_time_to_empty.ipynb)
-1. **Load parquet** - `pd.read_parquet(file_path)`
-2. **DTO transformation** - `dto_ness_parquet(df)`:
-   - Type conversion (float columns: Ip, Vp, SoC, FullCap, BT1-4, etc.)
-   - Merge current and voltage data using `merge_asof()`
-   - Split Ip into ic (charge) and id (discharge) based on sign
-   - Process temperature: BT1-4 ÷ 10, create tmp as max
-   - Column mapping: ts, ic, id, lv, soc, tmp, etc.
-3. **Time columns** - `add_time_columns(df)`:
-   - Convert timestamp (ms) to UTC datetime
-   - Calculate time differences in seconds
-4. **Load status** - `get_load_status(current_net)`:
-   - Calculate net current: `ic - id`
-   - Classify state: charging (>10 mA), discharging (<-10 mA), rest (±10 mA)
-5. **Pass to algorithm** - TTE/TTF uses load_status state for session determination
-
-### State Determination (not from SOC change)
-- **Charging**: net current > 10 mA
-- **Discharging**: net current < -10 mA
-- **Rest**: -10 ≤ net current ≤ 10 mA
-
-## Session-Based TTE/TTF Algorithm
-
-### How It Works
-Tracks distinct charge/discharge/rest sessions and validates TTE/TTF estimates:
-1. **Session tracking** - Creates new session when battery state (from load_status) changes
-2. **Energy accumulation** - Tracks SOC changes during session (converted to Ah)
-3. **Validation gating** - Outputs TTE/TTF only if session meets dual criteria:
-   - Duration ≥ `session_min_duration_minutes` (default: 15 min)
-   - Energy change ≥ `session_min_energy_ah` (default: 1 Ah)
-4. **Smooth transitions** - Uses exponential smoothing (factor: 0.3) to prevent sudden jumps
-
-### Configuration (config.yaml)
 ```yaml
+execution:
+  mode: "apply_battery"
+  patterns_label: "september_2025"     # Which patterns to load from DB
+  apply_month: ""                      # "" = all data, "2025-10" = Oct only
+```
+
+**Workflow:**
+1. Loads patterns from SQLite using label
+2. Applies SimpleTTECalculator to new data
+3. Outputs: One CSV per battery with TTE/TTF estimates
+
+**Time:** ~2-5s per battery (no training overhead)
+
+---
+
+## Data Pipeline
+
+### Input Data
+- **Format:** Parquet files in `data/` directory
+- **File naming:** `{battery_id}.parquet` (e.g., `SE0100000092.parquet`)
+- **Columns:** ts (timestamp), ic (charge current), id (discharge current), lv (voltage), soc, FullCap, etc.
+
+### Processing Steps
+1. **Load parquet** via `pd.read_parquet()`
+2. **DTO transformation** via `dto_ness_parquet()` (type conversion, ic/id split)
+3. **Add time columns** (UTC time, time diffs)
+4. **State classification** (charging/discharging/rest based on net current)
+5. **TTE/TTF estimation** (LoadClassifier → decay rate lookup → smoothing)
+6. **Save CSV** results to `output/` directory
+
+### State Determination
+State (charging/discharging/rest) based on **net current** (>50mA / <-50mA / ±50mA):
+```python
+net_current = ic - id
+if net_current > 50 mA:    status = "charging"
+elif net_current < -50 mA: status = "discharging"
+else:                       status = "rest"
+```
+
+---
+
+## Algorithm Architecture
+
+**Three components:**
+
+1. **LoadClassifier**
+   - Categorizes discharge pattern: idle, steady, transient, cyclic
+   - Uses 30-sample current history window
+
+2. **SOCDecayAnalyzer** (training only)
+   - Learns SOC decay rates (% per minute) for:
+     - SOC levels (10% buckets: 0-10%, 10-20%, ...)
+     - Load classes (idle, steady, transient, cyclic)
+     - Current ranges (configurable buckets)
+     - States (charging vs discharging)
+   - Stores in SQLite with sample counts and percentiles
+
+3. **SimpleTTECalculator** (training + inference)
+   - Looks up learned decay rate for current conditions
+   - Validates session (dual gates: medium 3min+0.2Ah, high 15min+1Ah)
+   - Applies EMA smoothing for stability
+   - Assigns confidence (high / medium)
+   - Implements carry-forward to fill NaN gaps
+
+**Session Tracking:**
+- Monitors when state changes (start new session)
+- Accumulates SOC change + time
+- Emits TTE/TTF when gate criteria met
+- Uses last valid TTE (decremented by time) during gaps
+
+**Fallback hierarchy** when training data sparse:
+1. Exact condition match (SOC bucket, load, current)
+2. Relax load class (transient → cyclic → steady → idle)
+3. Neighbor SOC bucket (±10%)
+4. Global fleet average
+5. Hard default (0.15%/min)
+
+---
+
+## Configuration (config.yaml)
+
+**Critical settings:**
+```yaml
+execution:
+  mode: "train_all_batteries" or "apply_battery"
+  patterns_label: "label_name"        # Used to save/load patterns
+  training_month: ""                  # Filter by YYYY-MM or empty
+  apply_month: ""                     # Filter by YYYY-MM or empty
+
+database:
+  path: "battery_patterns.db"         # SQLite file
+
 tte_ttf:
-  current_threshold_ma: 50.0              # Base load injection threshold (mA)
-  ema_window_minutes: 15                  # Current smoothing window (min)
-  session_min_duration_minutes: 15.0      # Min session duration (min)
-  session_min_energy_ah: 1.0              # Min energy change per session (Ah)
-  tte_ttf_smoothing_factor: 0.3           # Smoothing: 0.1 (smooth) to 1.0 (responsive)
+  current_threshold_ma: 50.0          # Noise floor for state detection
+  ema_window_minutes: 20              # Current smoothing window
+  session_min_duration_minutes: 3.0   # Medium gate: min session duration
+  session_min_energy_ah: 0.2          # Medium gate: min SOC change
+  session_high_confidence_minutes: 15.0   # High gate: duration
+  session_high_confidence_energy_ah: 1.0 # High gate: energy
+  tte_ttf_smoothing_factor: 0.15      # EMA smoothing (0.05-0.5)
+  current_thresholds_a: [0.5, 2.0, 5.0]  # Current bucketing
+  usage_window_minutes: 30            # Rolling avg power window
+  default_discharge_rate_pct_per_min: 0.15  # Fallback rate
 ```
 
-### Tuning Tips
-**If coverage is too low (mostly NaN):**
-- Reduce `session_min_duration_minutes` (try: 3-5 for frequent state changes)
-- Reduce `session_min_energy_ah` (try: 0.1-0.5 for fine-grained tracking)
+**See `doc/CONFIGURATION.md` for all options and tuning guide.**
 
-**If TTE/TTF values jump too much:**
-- Decrease `tte_ttf_smoothing_factor` (try: 0.1-0.2 for smoother output)
+---
 
-**If current estimates are noisy:**
-- Increase `ema_window_minutes` (try: 20-30 for smoother estimates)
+## Output Format
 
-## GUI - Battery Simulation Application
+**File pattern:** `output/tte_ttf_results_{battery_id}.csv`
 
-### Overview
-Interactive Streamlit-based GUI (`gui/app.py`) for real-time visualization and step-by-step simulation of battery behavior from TTE/TTF results CSV files.
-
-### Running the GUI
-
-**Quick Start:**
-```bash
-# Windows
-gui/run.bat
-
-# Linux/macOS
-bash gui/run.sh
-
-# Or directly
-streamlit run gui/app.py
-```
-
-The app opens at `http://localhost:8501`
-
-### Features
-- **Play/Pause Simulation**: Step through historical data at configurable speeds (1-100×)
-- **Dynamic Metrics**: Real-time KPI cards showing TTE/TTF, SOC, current, voltage
-- **Intelligent Switching**: Automatically displays TTE during discharge, TTF during charge
-- **Time Series Charts**: Visualizes SOC, current draw, and voltage trends
-- **Interactive Controls**: Speed adjustment, batch size, timeline scrubber
-- **Status Indicators**: Color-coded charging state (🟢 charging, 🔴 discharging, 🔵 rest)
-
-### Data Format Expected
-CSV files in `outputs/` directory with columns:
+**Key columns:**
 - `timestamp`: ISO datetime
-- `voltage_v`, `current_a`: Raw measurements
-- `status`: 'charging', 'discharging', or 'rest'
-- `tte_hours`, `ttf_hours`: Time estimates (NaN when not applicable)
+- `voltage_v`, `current_a`: Electrical measurements
+- `status`: charging | discharging | rest
 - `soc`, `capacity_ah`: Battery state
-- `confidence`, `num_samples`: Prediction metadata
+- **`tte_hours`**: Time To Empty estimate (NaN if not discharging)
+- **`ttf_hours`**: Time To Full estimate (NaN if not charging)
+- `average_usage_kw`: Rolling 30-min discharge power
+- `confidence`: high | medium (validation level)
+- `num_samples`: Training data sample count for this condition
 
-### How to Use
-1. Run the application
-2. Select a CSV file from sidebar
-3. Adjust speed and batch size
-4. Click **▶️ Play** to start simulation
-5. Watch metrics and charts update in real-time
-6. Use slider to jump to any point in the dataset
+**See `doc/OUTPUT_SCHEMA.md` for column definitions and quality checks.**
+
+---
+
+## Typical Workflow
+
+### Month 1: Training
+```bash
+# config.yaml
+execution:
+  mode: "train_all_batteries"
+  patterns_label: "march_2025"
+  training_month: "2025-03"
+
+# Run
+python src/main.py
+
+# Output: output/tte_ttf_results_*.csv + patterns in DB
+```
+
+### Month 2+: Apply
+```bash
+# config.yaml
+execution:
+  mode: "apply_battery"
+  patterns_label: "march_2025"        # ← Same label!
+  apply_month: "2025-04"
+
+# Run
+python src/main.py
+
+# Output: output/tte_ttf_results_*.csv (using learned patterns)
+```
+
+---
+
+## Performance Expectations
+
+- **Training:** 10-30s for multi-month data across multiple batteries
+- **Apply:** 2-5s per battery (no training)
+- **Coverage:** >90% TTE during discharge, >90% TTF during charge (goal)
+- **Confidence:** 60-80% high confidence, 20-40% medium (typical)
+
+---
+
+## Directory Structure
+
+```
+e:\time_to_empty\
+├── CLAUDE.md                         ← This file
+├── config.yaml                       ← Settings (edit before running)
+├── requirements.txt                  ← Python dependencies
+├── battery_patterns.db               ← SQLite pattern storage (auto-created)
+├── src/
+│   ├── main.py                      ← Entry point
+│   ├── battery_manager.py           ← Orchestration
+│   ├── db.py                        ← Database access
+│   ├── tte_ttf_algorithm.py         ← Core algorithm
+│   └── __init__.py
+├── data/
+│   ├── SE0100000092.parquet         ← Input data files
+│   ├── SE0100000093.parquet
+│   └── ...
+├── output/                           ← Generated results
+│   └── tte_ttf_results_{battery_id}.csv
+└── doc/                              ← Documentation (in doc/ folder only!)
+    ├── SYSTEM_OVERVIEW.md
+    ├── CONFIGURATION.md
+    ├── OUTPUT_SCHEMA.md
+    ├── ALGORITHM.md
+    └── WORKFLOW_DIAGRAM.txt
+```
+
+---
+
+## Quick Reference
+
+| Task | Config Mode | Command |
+|------|-------------|---------|
+| Train patterns | `train_all_batteries` | `python src/main.py` |
+| Apply patterns | `apply_battery` | `python src/main.py` |
+| Train one month | Set `training_month: "2025-03"` | `python src/main.py` |
+| Apply to new month | Set `apply_month: "2025-04"` | `python src/main.py` |
+
+---
+
+## References
+
+- **System overview:** `doc/SYSTEM_OVERVIEW.md`
+- **Configuration guide:** `doc/CONFIGURATION.md`
+- **Output columns:** `doc/OUTPUT_SCHEMA.md`
+- **Algorithm details:** `doc/ALGORITHM.md`

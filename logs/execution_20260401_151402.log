@@ -1,0 +1,91 @@
+
+================================================================================
+TTE/TTF Pipeline Started - 2026-04-01 15:14:02
+Log file: E:\time_to_empty\logs\execution_20260401_151402.log
+================================================================================
+
+================================================================================
+TTE/TTF Pipeline - Mode: VALIDATE
+================================================================================
+
+[VALIDATION] Starting TTE/TTF validation...
+
+[DISCOVERED] 1 batteries in data/:
+  [OK] SE0100000092: SE0100000092.parquet
+
+================================================================================
+[VALIDATING] Battery: SE0100000092
+================================================================================
+[1] Loading SE0100000092 data...
+    Loaded 995,137 rows
+[2] Preprocessing...
+    [DTO] Transforming data with dto_ness_parquet...
+    [DTO] Columns after DTO: ['ts', 'ic', 'id', 'lv', 'soc', 'tmp', 'soh', 'strv_1', 'strv_2', 'strv_3', 'strv_4', 'strv_5', 'strv_6', 'strv_7', 'strv_8', 'strv_9', 'strv_10', 'strv_11', 'strv_12', 'strv_13', 'strv_14', 'strv_15', 'strv_16', 'CyCnt', 'FullCap', 'BT1', 'BT2', 'BT3', 'BT4']
+    [TIME] Adding time columns...
+    [STATE] Determining charging/discharging/rest states...
+    [STATE] State distribution:
+      - Charging: 252275
+      - Discharging: 584992
+      - Rest: 157870
+      - NaN: 0
+[3] Loading predictions from tte_ttf_SE0100000092.csv...
+    Loaded 73,520 predictions
+[4] Computing actual TTE...
+    Computed actual TTE for 45,594 rows
+[5] Computing validation metrics...
+
+================================================================================
+  TTE/TTF VALIDATION REPORT — SE0100000092
+================================================================================
+
+  Validation Data:
+    Total discharge rows:           45,595
+    Rows with TTE:                  43,601 (95.6%)
+    Rows with actual_tte:           43,600 (95.6%)
+
+  ERROR DISTRIBUTION (predicted - actual):
+    Mean bias:             -9.62 hours ( -577.4 min)
+    Std deviation:           6.56 hours
+    Range:          [ -42.29,    7.83] hours
+    Percentiles: p50= -9.45h, p25=-13.10h, p75= -5.32h
+
+  GAUSSIAN ANALYSIS:
+    Normality test (p>0.05):    [!] Non-normal (p=0.000)
+    Mean +/- Std:                 -9.62 +/-   6.56 hours
+    68% within +/-1sigma:       [ -16.18,   -3.07] (71.5%)
+    95% within +/-2sigma:       [ -22.73,    3.49] (94.0%)
+
+  ACCURACY METRICS:
+    MAE (Mean Absolute Error):       9.93 hours ( 595.7 min)
+    RMSE:                           11.64 hours
+    MAPE:                           593.6%
+    Within ±1 hour:                   2.3%
+    Within ±30 min:                   0.9%
+    Within ±15 min:                   0.5%
+
+  BY CONFIDENCE LEVEL:
+       HIGH: MAE= 10.09h, bias= -9.90h, n=41,811
+     MEDIUM: MAE=  9.01h, bias= -7.18h, n=   607
+        LOW: MAE=  4.69h, bias= -0.92h, n= 1,182
+
+  BY SOC RANGE:
+       0-20%: MAE=  1.88h, n= 1,257
+      20-50%: MAE=  7.15h, n=15,370
+      50-80%: MAE= 11.85h, n=19,535
+     80-100%: MAE= 11.98h, n= 7,437
+
+  TEMPORAL CONSISTENCY:
+    Monotonicity violations:         70.2% (30,608 / 43,601)
+    Mean TTE change rate:           -0.01 (ideal ~= -1.0)
+
+================================================================================
+[6] Saving validation CSV to validation_SE0100000092.csv...
+    [OK] Saved 73,520 validation rows
+
+================================================================================
+[SUCCESS] All Batteries Validated
+================================================================================
+
+================================================================================
+[SUCCESS] Complete
+================================================================================

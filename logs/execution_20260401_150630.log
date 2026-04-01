@@ -1,0 +1,41 @@
+
+================================================================================
+TTE/TTF Pipeline Started - 2026-04-01 15:06:30
+Log file: E:\time_to_empty\logs\execution_20260401_150630.log
+================================================================================
+
+================================================================================
+TTE/TTF Pipeline - Mode: VALIDATE
+================================================================================
+
+[VALIDATION] Starting TTE/TTF validation...
+
+[DISCOVERED] 1 batteries in data/:
+  [OK] SE0100000092: SE0100000092.parquet
+
+================================================================================
+[VALIDATING] Battery: SE0100000092
+================================================================================
+[1] Loading SE0100000092 data...
+    Loaded 995,137 rows
+[2] Preprocessing...
+    [DTO] Transforming data with dto_ness_parquet...
+    [DTO] Columns after DTO: ['ts', 'ic', 'id', 'lv', 'soc', 'tmp', 'soh', 'strv_1', 'strv_2', 'strv_3', 'strv_4', 'strv_5', 'strv_6', 'strv_7', 'strv_8', 'strv_9', 'strv_10', 'strv_11', 'strv_12', 'strv_13', 'strv_14', 'strv_15', 'strv_16', 'CyCnt', 'FullCap', 'BT1', 'BT2', 'BT3', 'BT4']
+    [TIME] Adding time columns...
+    [STATE] Determining charging/discharging/rest states...
+    [STATE] State distribution:
+      - Charging: 252275
+      - Discharging: 584992
+      - Rest: 157870
+      - NaN: 0
+[3] Loading predictions from tte_ttf_results_SE0100000092.csv...
+    [ERROR] Output file not found: E:\time_to_empty\output\tte_ttf_results_SE0100000092.csv
+    Run train_all_batteries or apply_battery mode first
+
+================================================================================
+[SUCCESS] All Batteries Validated
+================================================================================
+
+================================================================================
+[SUCCESS] Complete
+================================================================================

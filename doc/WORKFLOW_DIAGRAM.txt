@@ -1,255 +1,302 @@
 ================================================================================
-  TTE/TTF SYSTEM WORKFLOW - TRAIN vs TEST vs APPLY
+  TTE/TTF MULTI-BATTERY SYSTEM - EXECUTION WORKFLOW
 ================================================================================
 
-SCENARIO 1: LEARNING PHASE (TRAIN_TEST_SPLIT)
-──────────────────────────────────────────────
+Updated: 2026-04-01
 
-    config.yaml: execution.mode = "train_test_split"
+================================================================================
+SCENARIO 1: TRAINING PHASE (train_all_batteries)
+================================================================================
 
-    Input Data (Full Month)
+    config.yaml: execution.mode = "train_all_batteries"
+                 patterns_label = "september_2025"
+
+    Data Directory
            │
-           ├─────────────────────────────────────────────────────┐
-           │                                                       │
-           ▼                                                       ▼
+           ├─ SE0100000092.parquet
+           ├─ SE0100000093.parquet
+           ├─ SE0100000094.parquet
+           └─ ...
+           │
+           ▼
 
-      TRAINING SET                                        TEST SET
-      (Sept 1-25)                                      (Sept 26-30)
-      54,632 samples                                   18,608 samples
-           │                                                │
-           ▼                                                │
+    [DISCOVERY] Find all .parquet files
+           │
+           ├─────────────┬──────────────┬──────────────┐
+           │             │              │              │
+           ▼             ▼              ▼              ▼
 
-      [TRAIN ALGORITHM]                                    │
-      - Learn SOC decay rates                             │
-      - Learn load patterns                              │
-           │                                               │
-           ▼                                               │
+    Battery 1      Battery 2       Battery 3     ... Battery N
+    (SE000001)     (SE000002)      (SE000003)
 
-      Patterns Learned                                     │
-      ✓ decay_rate[soc=50%][current=3A] = 0.2%/min       │
-      ✓ decay_rate[soc=50%][current=6A] = 0.4%/min       │
-      ✓ load_class[cv=0.1] = 'steady'                    │
-           │                                               │
-           ▼                                               ▼
+        │               │              │              │
+        └─ Load DTO ────┴─ Load DTO ───┴─ Load DTO ──┘
+        │
+        ▼
 
-      [ESTIMATE TTE]                                  [ESTIMATE TTE]
-      (using learned patterns)                    (using learned patterns)
-           │                                               │
-           ▼                                               ▼
+    [PREPROCESS] Add time columns, determine state
+                (charging/discharging/rest)
+        │
+        ▼
 
-      tte_ttf_train_results.csv                   tte_ttf_test_results.csv
-      - 54,632 rows                              - 18,608 rows
-      - TTE mean: 5.23h                         - TTE mean: 5.19h
-      - TTE std: 2.15h                          - TTE std: 2.18h
-      - Coverage: 98.5%                         - Coverage: 97.8%
-           │                                               │
-           └─────────────────────────┬─────────────────────┘
-                                     │
-                                     ▼
+    [TRAIN LoadClassifier]
+    - Categorize load patterns: idle, steady, transient, cyclic
+        │
+        ▼
 
-                    [COMPARE METRICS]
+    [TRAIN SOCDecayAnalyzer]
+    - Learn SOC decay rates for all conditions:
+      * SOC levels (10% buckets)
+      * Load classes
+      * Current ranges (0.5A, 2A, 5A+)
+      * Charging vs Discharging
+    │
+    ├─ Learned rates → SQLite database
+    │
+    ▼
 
-                    Metric              Train    Test
-                    ──────────────────────────────────
-                    Total samples       54,632   18,608
-                    TTE coverage        98.5%    97.8%
-                    Mean TTE (h)        5.23     5.19
-                    Std TTE (h)         2.15     2.18
-                    Drift (h)           +0.04    -0.02
+    [ESTIMATE TTE/TTF]
+    Use learned patterns for each battery
+    │
+    ├─ output/tte_ttf_results_SE0100000092.csv
+    ├─ output/tte_ttf_results_SE0100000093.csv
+    ├─ output/tte_ttf_results_SE0100000094.csv
+    └─ ...
 
-                                     │
-                                     ▼
+    SQLite Storage (battery_patterns.db):
+        table: battery_patterns
+        ├─ battery_id: SE0100000092
+        ├─ label: september_2025
+        ├─ timestamp: 2026-04-01T14:32:00
+        ├─ phase: charge | discharge
+        ├─ soc_window: [0-10], [10-20], ..., [90-100]
+        ├─ load_class: idle | steady | transient | cyclic
+        ├─ current_range: low | medium | high | very_high
+        └─ rate_median: 0.92 (%SOC/min)
 
-                    [SAVE PATTERNS]
-                    outputs/patterns/september_2025_<timestamp>/
-                    ├── metadata.json
-                    ├── soc_decay_analyzer.pkl    ◄── SAVE THIS!
-                    └── load_classifier.pkl       ◄── SAVE THIS!
 
-                    Pattern files now available for reuse!
+    METRICS OUTPUT (Console):
+    ────────────────────────
+    ✓ SE0100000092: TTE coverage=92.1%, high_confidence=71.5%
+    ✓ SE0100000093: TTE coverage=89.3%, high_confidence=68.2%
+    ✓ SE0100000094: TTE coverage=94.7%, high_confidence=75.1%
+    ...
 
+================================================================================
+SCENARIO 2: PRODUCTION INFERENCE (apply_battery)
+================================================================================
 
-SCENARIO 2: APPLICATION PHASE (APPLY)
-──────────────────────────────────────
-
-    config.yaml: execution.mode = "apply"
+    config.yaml: execution.mode = "apply_battery"
+                 patterns_label = "september_2025"
 
     New Data (Next Month)
            │
-           ▼
-
-      October Data
-      (67,000 new samples)
-      [NO TRAINING NEEDED]
+           ├─ SE0100000092.parquet (new data, Sept 2025)
+           ├─ SE0100000093.parquet (new data, Sept 2025)
+           ├─ SE0100000094.parquet (new data, Sept 2025)
+           └─ ...
            │
            ▼
 
-      [LOAD SAVED PATTERNS]
-      from: outputs/patterns/september_2025_<timestamp>/
-      ✓ Loaded soc_decay_analyzer.pkl
-      ✓ Loaded load_classifier.pkl
+    [DISCOVERY] Find all .parquet files
+           │
+           ├─────────────┬──────────────┬──────────────┐
+           │             │              │              │
+           ▼             ▼              ▼              ▼
+
+    Load Battery    Load Battery    Load Battery    Load Battery
+    (SE000001)      (SE000002)      (SE000003)      (SE000004)
+           │
+           └─ Load DTO ─┘
            │
            ▼
 
-      Patterns Ready
-      ✓ decay_rate[soc=50%][current=3A] = 0.2%/min  (from training)
-      ✓ decay_rate[soc=50%][current=6A] = 0.4%/min  (from training)
-      ✓ load_class[cv=0.1] = 'steady'               (from training)
+    [PREPROCESS] Add time columns, determine state
            │
            ▼
 
-      [ESTIMATE TTE]
-      (using LOADED patterns, NO retraining!)
-      ⚡ INSTANT (no learning overhead)
-           │
-           ▼
-
-      tte_ttf_results_applied.csv
-      - 67,000 rows
-      - TTE estimates ready
-      - Complete in ~2 seconds!
-           │
-           ▼
-
-      Results immediately available for dashboard/app
-
-
-COMPARISON: TRAIN TIME vs APPLY TIME
-─────────────────────────────────────
-
-    TRAIN MODE (Learning)
-    ┌──────────────────────────────────┐
-    │ Load data:           1 second     │
-    │ Preprocess:          2 seconds    │
-    │ TRAIN algorithm:     5 seconds    │ ◄── Takes time (learning)
-    │ Estimate TTE:        3 seconds    │
-    │ Save patterns:       2 seconds    │
-    ├──────────────────────────────────┤
-    │ TOTAL:              ~13 seconds   │
-    └──────────────────────────────────┘
-
-    Output: patterns/ (can be reused many times!)
-
-
-    APPLY MODE (No Training)
-    ┌──────────────────────────────────┐
-    │ Load data:           1 second     │
-    │ Preprocess:          2 seconds    │
-    │ LOAD patterns:       <1 second    │ ◄── Very fast (just load)
-    │ Estimate TTE:        1 second     │ ◄── No retraining
-    ├──────────────────────────────────┤
-    │ TOTAL:               ~4 seconds   │
-    └──────────────────────────────────┘
-
-    Output: results CSV (ready to use)
-
-    ⚡ 3.25x faster because no training!
-
-
-HOW TO CHOOSE MODE
-───────────────────
-
-    Starting fresh with new data?
-    ├─ YES → Use TRAIN_TEST_SPLIT first
-    │        (validate on yourself before deploying)
+    [LOAD PATTERNS] From SQLite database
+    ├─ Pattern label: september_2025
+    ├─ Load LoadClassifier
+    ├─ Load SOCDecayAnalyzer
     │
-    └─ NO (have existing patterns from past training?)
-       ├─ YES → Use APPLY mode (fast!)
-       │
-       └─ NO → Use TRAIN_ONLY (learn all available data)
+    ├─ Query: battery_patterns WHERE label="september_2025"
+    └─ Retrieved: learned rates for all conditions
+           │
+           ▼
 
+    [APPLY PATTERNS] SimpleTTECalculator
+    For each row:
+    1. Classify current load (idle/steady/transient/cyclic)
+    2. Look up decay rate for current conditions
+    3. Validate session (≥3min + ≥0.2Ah for medium confidence)
+    4. Calculate TTE/TTF using decay rate
+    5. Apply EMA smoothing
+    6. Assign confidence (high/medium)
+           │
+           ▼
 
-DECISION TREE
-─────────────
+    [ESTIMATE TTE/TTF]
+    Fast inference on new data
+    │
+    ├─ output/tte_ttf_results_SE0100000092.csv
+    ├─ output/tte_ttf_results_SE0100000093.csv
+    ├─ output/tte_ttf_results_SE0100000094.csv
+    └─ ...
 
-    ╔════════════════════════════════════════════════════════════════════╗
-    ║ "Do I have saved patterns from previous training?"               ║
-    ╚═══════════════════════╦════════════════════════════════════╦═════╝
-                            │                                     │
-                        YES │                                 NO  │
-                            │                                     │
-                    ┌───────▼──────────┐              ┌──────────▼──────┐
-                    │  mode: "apply"   │              │ "train_only" or │
-                    │                  │              │ "train_test_    │
-                    │ Fast!            │              │  split"         │
-                    │ ~2 seconds       │              │                 │
-                    │                  │              │ Slower (learn)  │
-                    │ No retraining    │              │ ~10-15 seconds  │
-                    │                  │              │                 │
-                    │ Perfect for      │              │ But creates     │
-                    │ production!      │              │ patterns!       │
-                    └──────────────────┘              └─────────────────┘
+    METRICS OUTPUT (Console):
+    ────────────────────────
+    ✓ SE0100000092: TTE coverage=91.8%, high_confidence=70.3%
+    ✓ SE0100000093: TTE coverage=88.9%, high_confidence=67.9%
+    ✓ SE0100000094: TTE coverage=94.2%, high_confidence=74.6%
+    ...
 
-
-TYPICAL DEPLOYMENT TIMELINE
-────────────────────────────
-
-Week 1: Learning Phase
-┌─────────────────────────────────────────────────────┐
-│ Monday:   Collect historical data (Sept 1-25)      │
-│ Tuesday:  python src/main.py [train_test_split]    │
-│           Review comparison metrics                 │
-│ Wednesday: Patterns saved to outputs/patterns/      │
-│           Ready for production!                     │
-└─────────────────────────────────────────────────────┘
-
-Week 2+: Production Phase
-┌─────────────────────────────────────────────────────┐
-│ Daily:    New data arrives (Oct 1, 2, 3, ...)      │
-│           python src/main.py [apply]                │
-│           ⚡ Fast! Results in ~2 seconds            │
-│           No retraining needed                      │
-└─────────────────────────────────────────────────────┘
-
-When to retrain?
-┌─────────────────────────────────────────────────────┐
-│ Coverage drops < 80%?     → Retrain                │
-│ Stability (std) increases 50%? → Retrain           │
-│ TTE drift > 1 hour?       → Retrain                │
-│ New battery pack?         → Retrain                │
-│ Otherwise:                → Keep applying!         │
-└─────────────────────────────────────────────────────┘
-
-
-FILE LOCATIONS
-──────────────
-
-    config.yaml
-    ↓
-    [Specifies: mode = train_test_split / train_only / apply]
-    ↓
-    python src/main.py
-    ↓
-    outputs/
-    ├── tte_ttf_train_results.csv      (if train_test_split)
-    ├── tte_ttf_test_results.csv       (if train_test_split)
-    ├── tte_ttf_results_applied.csv    (if apply)
-    ├── tte_ttf_results_full.csv       (if train_only or full)
-    ├── train_test_comparison.csv      (if train_test_split)
-    └── patterns/
-        └── <label>_<timestamp>/
-            ├── metadata.json
-            ├── soc_decay_analyzer.pkl      ◄── Saved patterns
-            └── load_classifier.pkl         ◄── Ready to reload!
-
-
-SUMMARY
-───────
-
-┌─────────────────────────────────────────────────────────────┐
-│ THREE MODES, ONE COMMAND                                    │
-│                                                             │
-│ TRAIN (learn patterns):                                    │
-│   config.yaml: mode = "train_test_split" or "train_only"  │
-│   python src/main.py                                       │
-│   Output: patterns/ saved, results generated               │
-│                                                             │
-│ APPLY (use patterns):                                      │
-│   config.yaml: mode = "apply"                              │
-│   python src/main.py                                       │
-│   Output: results generated FAST, no retraining            │
-│                                                             │
-│ Just edit config.yaml and run!                             │
-└─────────────────────────────────────────────────────────────┘
 
 ================================================================================
+COMPARISON: TRAIN vs APPLY TIMES
+================================================================================
+
+TRAIN_ALL_BATTERIES Mode:
+┌─────────────────────────────────────────────┐
+│ 3 batteries × 1 month data = ~15 seconds    │
+│                                             │
+│ Time breakdown:                             │
+│ ├─ Data load & preprocess: ~3s              │
+│ ├─ LoadClassifier training: ~2s             │
+│ ├─ SOCDecayAnalyzer training: ~7s           │
+│ └─ TTE/TTF estimation: ~3s                  │
+└─────────────────────────────────────────────┘
+
+APPLY_BATTERY Mode:
+┌─────────────────────────────────────────────┐
+│ 3 batteries × new data = ~3-5 seconds       │
+│                                             │
+│ Time breakdown:                             │
+│ ├─ Data load & preprocess: ~1s              │
+│ ├─ Load patterns from DB: ~0.5s             │
+│ └─ TTE/TTF estimation: ~1.5-3.5s            │
+│                                             │
+│ ✓ 3-4x FASTER because NO TRAINING          │
+└─────────────────────────────────────────────┘
+
+
+================================================================================
+OUTPUT CSV SCHEMA
+================================================================================
+
+timestamp,voltage_v,current_a,status,soc,capacity_ah,tte_hours,ttf_hours,
+average_usage_kw,confidence,num_samples
+
+2025-03-15T14:32:15Z,48.35,3.45,discharging,42.3,100.5,5.23,NaN,2.34,high,127
+2025-03-15T14:32:20Z,48.32,3.41,discharging,42.2,100.5,5.20,NaN,2.35,high,127
+2025-03-15T14:32:25Z,48.28,3.50,discharging,42.1,100.5,5.18,NaN,2.33,high,128
+2025-03-15T14:35:00Z,48.10,0.02,rest,41.8,100.5,NaN,NaN,NaN,NaN,0
+2025-03-15T14:37:15Z,47.90,8.20,charging,41.8,100.5,NaN,4.52,NaN,medium,45
+2025-03-15T14:37:20Z,47.95,8.25,charging,41.9,100.5,NaN,4.50,NaN,medium,45
+
+Key columns:
+  tte_hours    = Time To Empty (hours) — when status='discharging'
+  ttf_hours    = Time To Full (hours) — when status='charging'
+  confidence   = high (strict validation) or medium (early estimate)
+  num_samples  = Training data samples for this condition (higher = more reliable)
+
+
+================================================================================
+PATTERN STORAGE
+================================================================================
+
+SQLite Database: battery_patterns.db
+
+Schema:
+  CREATE TABLE battery_patterns (
+    id INTEGER PRIMARY KEY,
+    battery_id TEXT,            -- SE0100000092
+    label TEXT,                 -- september_2025
+    timestamp DATETIME,         -- 2026-04-01T14:32:00
+    phase TEXT,                 -- charge | discharge
+    soc_window TEXT,            -- [0-10], [10-20], ..., [90-100]
+    load_class TEXT,            -- idle | steady | transient | cyclic
+    current_range TEXT,         -- low | medium | high | very_high
+    rate_median REAL,           -- 0.92 (%SOC/min)
+    rate_mean REAL,
+    rate_std REAL,
+    rate_p25 REAL,
+    rate_p75 REAL,
+    count INTEGER               -- samples in this bucket
+  )
+
+Usage:
+  Training:  INSERT patterns learned from data
+  Applying:  SELECT patterns matching current conditions
+
+
+================================================================================
+CONFIGURATION FLOW
+================================================================================
+
+config.yaml
+    │
+    ├─ execution.mode
+    │   ├─ "train_all_batteries" → BatteryManager.train_all()
+    │   └─ "apply_battery" → BatteryManager.apply_all()
+    │
+    ├─ execution.patterns_label
+    │   └─ Used for save/load in SQLite
+    │
+    ├─ execution.training_month / apply_month
+    │   └─ Filter data (or "" for all)
+    │
+    ├─ database.path
+    │   └─ SQLite file location
+    │
+    └─ tte_ttf.*
+        ├─ current_threshold_ma (state classification)
+        ├─ ema_window_minutes (current smoothing)
+        ├─ session_min_duration_minutes (medium gate)
+        ├─ session_min_energy_ah (medium gate)
+        ├─ session_high_confidence_minutes (high gate)
+        ├─ session_high_confidence_energy_ah (high gate)
+        ├─ tte_ttf_smoothing_factor (estimate stability)
+        ├─ current_thresholds_a (bucketing)
+        ├─ usage_window_minutes (power rolling avg)
+        └─ default_discharge_rate_pct_per_min (fallback)
+
+
+================================================================================
+DECISION TREE
+================================================================================
+
+Do I have trained patterns?
+    │
+    ├─ NO  → Use training mode
+    │         config.yaml: mode = "train_all_batteries"
+    │         python src/main.py
+    │         (Takes ~15s, creates patterns in DB)
+    │
+    └─ YES → Use apply mode
+              config.yaml: mode = "apply_battery"
+              patterns_label = "september_2025"  ← match training label
+              python src/main.py
+              (Takes ~3s, reuses patterns)
+
+
+For seasonal analysis:
+    Train each season → separate pattern labels
+    ├─ "winter_2025" (Jan-Mar data)
+    ├─ "summer_2025" (Jun-Aug data)
+    ├─ "spring_2025" (Apr-May data)
+    └─ "fall_2025" (Sep-Nov data)
+
+    Then apply seasonal patterns as needed:
+    apply with patterns_label = "winter_2025" for Feb data
+    apply with patterns_label = "summer_2025" for July data
+
+
+================================================================================
+References
+================================================================================
+
+System Overview:    doc/SYSTEM_OVERVIEW.md
+Configuration:     doc/CONFIGURATION.md
+Output Schema:     doc/OUTPUT_SCHEMA.md
+Algorithm Details: doc/ALGORITHM.md

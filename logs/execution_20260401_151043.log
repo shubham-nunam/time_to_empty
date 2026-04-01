@@ -1,0 +1,52 @@
+
+================================================================================
+TTE/TTF Pipeline Started - 2026-04-01 15:10:43
+Log file: E:\time_to_empty\logs\execution_20260401_151043.log
+================================================================================
+
+================================================================================
+TTE/TTF Pipeline - Mode: VALIDATE
+================================================================================
+
+[VALIDATION] Starting TTE/TTF validation...
+
+[DISCOVERED] 1 batteries in data/:
+  [OK] SE0100000092: SE0100000092.parquet
+
+================================================================================
+[VALIDATING] Battery: SE0100000092
+================================================================================
+[1] Loading SE0100000092 data...
+    Loaded 995,137 rows
+[2] Preprocessing...
+    [DTO] Transforming data with dto_ness_parquet...
+    [DTO] Columns after DTO: ['ts', 'ic', 'id', 'lv', 'soc', 'tmp', 'soh', 'strv_1', 'strv_2', 'strv_3', 'strv_4', 'strv_5', 'strv_6', 'strv_7', 'strv_8', 'strv_9', 'strv_10', 'strv_11', 'strv_12', 'strv_13', 'strv_14', 'strv_15', 'strv_16', 'CyCnt', 'FullCap', 'BT1', 'BT2', 'BT3', 'BT4']
+    [TIME] Adding time columns...
+    [STATE] Determining charging/discharging/rest states...
+    [STATE] State distribution:
+      - Charging: 252275
+      - Discharging: 584992
+      - Rest: 157870
+      - NaN: 0
+[3] Loading predictions from tte_ttf_SE0100000092.csv...
+    Loaded 73,520 predictions
+[4] Computing actual TTE...
+    Computed actual TTE for 43,506 rows
+[5] Computing validation metrics...
+
+================================================================================
+  TTE/TTF VALIDATION REPORT — SE0100000092
+================================================================================
+
+  Validation Data:
+    Total discharge rows:           45,595
+    Rows with TTE:                  43,601 (95.6%)
+    Rows with actual_tte:           42,906 (94.1%)
+
+  ERROR DISTRIBUTION (predicted - actual):
+    Mean bias:             -8.70 hours ( -522.1 min)
+    Std deviation:           4.98 hours
+    Range:          [ -32.43,    5.74] hours
+    Percentiles: p50= -8.00h, p25=-11.30h, p75= -5.28h
+
+  GAUSSIAN ANALYSIS:

@@ -248,10 +248,19 @@ class SOCDecayRateAnalyzer:
                     'count': len(rates)
                 }
 
-        self.is_trained = True
+        # Only mark as trained if we actually learned discharge patterns
+        self.is_trained = bool(self.discharge_stats)
+        if not self.is_trained:
+            print(f"    [DECAY_RATE] [WARN] No discharge patterns learned — insufficient data")
+
         elapsed = time.time() - start_time
         print(f"    [DECAY_RATE] Trained in {elapsed:.0f}ms")
         print(f"    [DECAY_RATE] Discharge patterns: {len(self.discharge_stats)}, Charge patterns: {len(self.charge_stats)}")
+
+    @property
+    def pattern_count(self) -> int:
+        """Return number of learned discharge patterns (for diagnostics)."""
+        return len(self.discharge_stats)
 
     def estimate_tte_from_rate(self, current_soc: float, current_a: float,
                                load_class: str, state: str) -> Optional[float]:
