@@ -41,3 +41,7 @@ tte_ttf:
   # Adjust based on actual current distribution: use percentiles p25, p60, p85
   # Example for wider range: [1.0, 5.0, 15.0] → low, medium, high, very_high
   current_thresholds_a: [0.5, 2.0, 5.0]
+
+  # Rolling window for average_usage_kwh calculation (minutes)
+  # Shows cumulative energy consumed during discharge in the rolling window
+  usage_window_minutes: 30

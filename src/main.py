@@ -159,6 +159,21 @@ def estimate_and_save(calculator: TTETTFCalculator, data_df: pd.DataFrame, confi
     tte_time = time.time() - tte_start
     print(f"    TTE/TTF estimation time: {tte_time:.2f}s")
 
+    # Add rolling discharge energy (kWh) over configurable time window
+    window_min = tte_params.get('usage_window_minutes', 30)
+    discharge_mask = data_df['state'] == 'discharging'
+
+    # Instantaneous energy per timestep in Wh: V(V) × I(A) × dt(s) / 3600
+    energy_wh = (data_df['lv'] / 1000.0) * (data_df['id'] / 1000.0) * data_df['diff_time_secs'] / 3600.0
+    energy_wh = energy_wh.where(discharge_mask, 0.0)
+
+    # Time-based rolling sum → convert Wh to kWh
+    energy_wh.index = pd.to_datetime(data_df['ts'], unit='ms', utc=True)
+    rolling_kwh = energy_wh.rolling(f'{window_min}min').sum() / 1000.0
+    rolling_kwh.index = results_df.index  # realign index
+
+    results_df['average_usage_kwh'] = rolling_kwh.values.round(6)
+
     # Summary
     print(f"\n[4] Results Summary ({label})")
     print(f"    Generated: {len(results_df):,} rows")
