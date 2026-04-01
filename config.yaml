@@ -41,6 +41,7 @@ database:
 tte_ttf:
   current_threshold_ma: 50.0
   ema_window_minutes: 20
+  decay_rate_window_minutes: 60.0          # Rolling window for calculating SOC decay rates during training
 
   # Fallback Level 2: minimum discharge rows for reliable training
   min_discharge_rows: 100                  # warn if training data has fewer discharge rows
@@ -54,7 +55,7 @@ tte_ttf:
   session_high_confidence_minutes: 15.0    # original strict threshold
   session_high_confidence_energy_ah: 1.0   # original strict threshold
 
-  tte_ttf_smoothing_factor: 0.15           # Optimal: higher smoothing increases violations
+  tte_ttf_smoothing_factor: 0.15           # EMA smoothing: controls responsiveness vs noise
 
   # Current range thresholds (in Amperes) for bucketing decay rates
   # N thresholds → N+1 buckets. Default: [0.5, 2.0, 5.0] → low, medium, high, very_high
