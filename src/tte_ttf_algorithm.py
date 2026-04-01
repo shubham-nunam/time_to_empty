@@ -510,6 +510,8 @@ class SimpleTTECalculator:
             if tte_empirical is not None and 0 < tte_empirical <= 24.0:
                 # Apply smoothing
                 tte_smoothed = self._smooth_value(tte_empirical, self._previous_tte)
+                # Dampen upward jumps to prevent erratic behavior
+                tte_smoothed = self._dampen_jump(tte_smoothed, self._previous_tte, is_tte=True)
 
                 tte_hours = tte_smoothed
                 self._previous_tte = tte_hours
@@ -543,6 +545,8 @@ class SimpleTTECalculator:
             if ttf_empirical is not None and 0 < ttf_empirical <= 24.0:
                 # Apply smoothing
                 ttf_smoothed = self._smooth_value(ttf_empirical, self._previous_ttf)
+                # Dampen downward jumps to prevent erratic behavior
+                ttf_smoothed = self._dampen_jump(ttf_smoothed, self._previous_ttf, is_tte=False)
 
                 ttf_hours = ttf_smoothed
                 self._previous_ttf = ttf_hours
@@ -652,6 +656,26 @@ class SimpleTTECalculator:
         if old_value is None or np.isnan(old_value):
             return new_value
         return self.smoothing_factor * new_value + (1 - self.smoothing_factor) * old_value
+
+    def _dampen_jump(self, smoothed_value: Optional[float], old_value: Optional[float], is_tte: bool) -> Optional[float]:
+        """Dampen upward jumps in TTE/TTF to prevent erratic behavior during transitions"""
+        if smoothed_value is None or old_value is None:
+            return smoothed_value
+        if np.isnan(smoothed_value) or np.isnan(old_value):
+            return smoothed_value
+
+        # For TTE: should only decrease (or stay same). Reject any upward jumps
+        # For TTF: should only increase (or stay same). Reject any downward jumps
+        if is_tte:
+            if smoothed_value > old_value:
+                # TTE jumped up - keep previous estimate (TTE should only decrease)
+                return old_value
+            return smoothed_value
+        else:  # TTF
+            if smoothed_value < old_value:
+                # TTF jumped down - keep previous estimate (TTF should only increase)
+                return old_value
+            return smoothed_value
 
     def _transition_session(self, new_state: str, timestamp: pd.Timestamp, soc: float) -> None:
         """Transition to a new session when state changes"""
