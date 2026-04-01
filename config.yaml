@@ -32,8 +32,16 @@ database:
 tte_ttf:
   current_threshold_ma: 50.0
   ema_window_minutes: 20
-  session_min_duration_minutes: 15.0
-  session_min_energy_ah: 1.0
+
+  # Session validation thresholds for TTE/TTF estimates
+  # Medium confidence: relaxed gate (emit TTE early, but less certain)
+  session_min_duration_minutes: 3.0        # was 15.0 — relaxed for better coverage
+  session_min_energy_ah: 0.2               # was 1.0 — relaxed for better coverage
+
+  # High confidence: strict gate (very certain estimates)
+  session_high_confidence_minutes: 15.0    # original strict threshold
+  session_high_confidence_energy_ah: 1.0   # original strict threshold
+
   tte_ttf_smoothing_factor: 0.15
 
   # Current range thresholds (in Amperes) for bucketing decay rates

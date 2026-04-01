@@ -368,17 +368,23 @@ class SimpleTTECalculator:
                  session_min_duration_minutes: float = 15.0,
                  session_min_energy_ah: float = 1.0,
                  tte_ttf_smoothing_factor: float = 0.2,
-                 current_thresholds: list = None):
+                 current_thresholds: list = None,
+                 session_high_confidence_minutes: float = 15.0,
+                 session_high_confidence_energy_ah: float = 1.0):
         """
         Parameters:
         -----------
-        session_min_duration_minutes : minimum session duration for valid TTE/TTF (default 15)
-        session_min_energy_ah : minimum energy change for valid TTE/TTF (default 1.0)
+        session_min_duration_minutes : minimum session duration for medium confidence TTE/TTF (default 15 → 3.0 with relaxed config)
+        session_min_energy_ah : minimum energy change for medium confidence TTE/TTF (default 1.0 → 0.2 with relaxed config)
         tte_ttf_smoothing_factor : smoothing factor for TTE/TTF (0-1, default 0.2 for stability)
         current_thresholds : list of current range thresholds in Amperes (default [0.5, 2.0, 5.0])
+        session_high_confidence_minutes : session duration threshold for high confidence (default 15.0)
+        session_high_confidence_energy_ah : session energy threshold for high confidence (default 1.0)
         """
         self.session_min_duration_minutes = session_min_duration_minutes
         self.session_min_energy_ah = session_min_energy_ah
+        self.session_high_conf_minutes = session_high_confidence_minutes
+        self.session_high_conf_energy_ah = session_high_confidence_energy_ah
         self.smoothing_factor = tte_ttf_smoothing_factor
 
         self.soc_decay = SOCDecayRateAnalyzer(soc_step=5, current_thresholds=current_thresholds)
@@ -388,6 +394,8 @@ class SimpleTTECalculator:
         self._last_soc = None
         self._previous_tte = None
         self._previous_ttf = None
+        self._last_valid_tte: Optional[float] = None  # carry-forward for gap filling
+        self._last_valid_ts: Optional[pd.Timestamp] = None  # timestamp of last valid TTE
         self.min_soc = 0.0
         self.max_soc = 100.0
 
@@ -478,16 +486,28 @@ class SimpleTTECalculator:
                 tte_hours = tte_smoothed
                 self._previous_tte = tte_hours
 
-                # Determine confidence
+                # Determine confidence based on session thresholds (relaxed and strict)
                 session_duration = self._current_session.duration_minutes(timestamp)
                 session_energy = abs(self._current_session.accumulated_energy_ah)
 
-                if session_duration >= 15.0 and session_energy >= 1.0:
+                if session_duration >= self.session_high_conf_minutes and session_energy >= self.session_high_conf_energy_ah:
                     confidence = 'high'
-                elif session_duration >= 5.0 and session_energy >= 0.3:
+                elif session_duration >= self.session_min_duration_minutes and session_energy >= self.session_min_energy_ah:
                     confidence = 'medium'
                 else:
                     confidence = 'low'
+
+                # Update carry-forward only if medium or high confidence
+                if confidence in ['high', 'medium']:
+                    self._last_valid_tte = tte_hours
+                    self._last_valid_ts = timestamp
+        # Carry-forward: if session not yet valid, use last known TTE (decremented by elapsed time)
+        elif state == 'discharging' and not session_valid and self._last_valid_tte is not None and self.soc_decay.is_trained:
+            elapsed_hours = (timestamp - self._last_valid_ts).total_seconds() / 3600.0
+            carried_tte = max(0.0, self._last_valid_tte - elapsed_hours)
+            if carried_tte > 0:
+                tte_hours = carried_tte
+                confidence = 'low'  # signal that this is carried, not freshly computed
 
         # TTF: Empirical decay rate for charge
         if state == 'charging' and session_valid and self.soc_decay.is_trained:
@@ -498,16 +518,28 @@ class SimpleTTECalculator:
                 ttf_hours = ttf_smoothed
                 self._previous_ttf = ttf_hours
 
-                # Determine confidence
+                # Determine confidence based on session thresholds (relaxed and strict)
                 session_duration = self._current_session.duration_minutes(timestamp)
                 session_energy = abs(self._current_session.accumulated_energy_ah)
 
-                if session_duration >= 15.0 and session_energy >= 1.0:
+                if session_duration >= self.session_high_conf_minutes and session_energy >= self.session_high_conf_energy_ah:
                     confidence = 'high'
-                elif session_duration >= 5.0 and session_energy >= 0.3:
+                elif session_duration >= self.session_min_duration_minutes and session_energy >= self.session_min_energy_ah:
                     confidence = 'medium'
                 else:
                     confidence = 'low'
+
+                # Update carry-forward only if medium or high confidence
+                if confidence in ['high', 'medium']:
+                    self._last_valid_tte = ttf_hours
+                    self._last_valid_ts = timestamp
+        # Carry-forward: if session not yet valid, use last known TTF (decremented by elapsed time)
+        elif state == 'charging' and not session_valid and self._last_valid_tte is not None and self.soc_decay.is_trained:
+            elapsed_hours = (timestamp - self._last_valid_ts).total_seconds() / 3600.0
+            carried_ttf = max(0.0, self._last_valid_tte - elapsed_hours)
+            if carried_ttf > 0:
+                ttf_hours = carried_ttf
+                confidence = 'low'  # signal that this is carried, not freshly computed
 
         # Format time
         time_hours = tte_hours if not np.isnan(tte_hours) else (ttf_hours if not np.isnan(ttf_hours) else float('inf'))
