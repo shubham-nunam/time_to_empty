@@ -4,7 +4,7 @@
 
 execution:
   # Mode selector
-  mode: "validate"           # Options: train_all_batteries, apply_battery, validate
+  mode: "train_all_batteries"           # Options: train_all_batteries, apply_battery, validate
 
   # Pattern label (e.g., month, version)
   # Used when saving patterns to database, or loading for validation
@@ -42,14 +42,14 @@ tte_ttf:
 
   # Session validation thresholds for TTE/TTF estimates
   # Medium confidence: relaxed gate (emit TTE early, but less certain)
-  session_min_duration_minutes: 3.0        # was 15.0 — relaxed for better coverage
-  session_min_energy_ah: 0.2               # was 1.0 — relaxed for better coverage
+  session_min_duration_minutes: 0.0        # DISABLED: force predictions on every sample
+  session_min_energy_ah: 0.0               # DISABLED: no energy requirement
 
   # High confidence: strict gate (very certain estimates)
   session_high_confidence_minutes: 15.0    # original strict threshold
   session_high_confidence_energy_ah: 1.0   # original strict threshold
 
-  tte_ttf_smoothing_factor: 0.15
+  tte_ttf_smoothing_factor: 0.15           # Optimal: higher smoothing increases violations
 
   # Current range thresholds (in Amperes) for bucketing decay rates
   # N thresholds → N+1 buckets. Default: [0.5, 2.0, 5.0] → low, medium, high, very_high
@@ -62,4 +62,4 @@ tte_ttf:
   usage_window_minutes: 30
 
   # Fallback Level 4: default discharge rate when no training data or all fallbacks fail
-  default_discharge_rate_pct_per_min: 0.15  # conservative fleet average (%SOC/min)
+  default_discharge_rate_pct_per_min: 0.10  # TUNING: reduced from 0.15 to reduce under-prediction

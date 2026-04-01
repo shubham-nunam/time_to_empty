@@ -164,6 +164,23 @@ class SOCDecayRateAnalyzer:
             state = session['state']
             rows = session['rows']
 
+            # PATH 1 FIX: Skip sessions that are too short or have too little SOC change
+            # This filters out micro-sessions with poor signal-to-noise ratio
+            if len(rows) > 1:
+                session_soc_start = rows[0][0]
+                session_soc_end = rows[-1][0]
+                session_time_min = (rows[-1][4] - rows[0][4]).total_seconds() / 60.0
+                session_soc_change = abs(session_soc_end - session_soc_start)
+
+                # Only use sessions with meaningful discharge/charge
+                min_session_time_minutes = 5.0  # Must be at least 5 minutes
+                min_session_soc_change = 0.5  # Must have at least 0.5% SOC change
+
+                if state == 'discharging' and (session_time_min < min_session_time_minutes or session_soc_change < min_session_soc_change):
+                    continue  # Skip this noisy session
+                elif state == 'charging' and (session_time_min < min_session_time_minutes or session_soc_change < min_session_soc_change):
+                    continue  # Skip this noisy session
+
             # Use rolling window approach
             for i in range(len(rows)):
                 soc_start, curr_start, volt_start, load_start, ts_start = rows[i]
@@ -492,6 +509,7 @@ class SimpleTTECalculator:
             if tte_empirical is not None and 0 < tte_empirical <= 24.0:
                 # Apply smoothing
                 tte_smoothed = self._smooth_value(tte_empirical, self._previous_tte)
+
                 tte_hours = tte_smoothed
                 self._previous_tte = tte_hours
 
@@ -524,6 +542,7 @@ class SimpleTTECalculator:
             if ttf_empirical is not None and 0 < ttf_empirical <= 24.0:
                 # Apply smoothing
                 ttf_smoothed = self._smooth_value(ttf_empirical, self._previous_ttf)
+
                 ttf_hours = ttf_smoothed
                 self._previous_ttf = ttf_hours
 

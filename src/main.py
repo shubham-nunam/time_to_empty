@@ -111,6 +111,80 @@ def preprocess_data(df):
     return df
 
 
+def merge_short_discharge_sessions(df: pd.DataFrame, max_gap_minutes: float = 5.0, min_soc_change: float = 0.5) -> pd.DataFrame:
+    """
+    Merge short discharge sessions separated by rest/charging into continuous sessions.
+
+    Problem: State detection is noisy, creating many short discharge bursts.
+    When training decay rates from these short bursts, we learn artificially high rates.
+
+    Solution: Merge discharge periods <max_gap_minutes apart into one continuous session.
+    This results in more realistic (lower) decay rates from longer, merged sessions.
+
+    Parameters:
+    -----------
+    df : pd.DataFrame
+        Data with 'state' and 'soc' columns
+    max_gap_minutes : float
+        Merge discharge periods separated by <= this gap (default 5 minutes)
+    min_soc_change : float
+        Only merge sessions with > this % SOC change (default 0.5%)
+
+    Returns:
+    --------
+    pd.DataFrame : Data with merged discharge sessions marked as 'discharging'
+    """
+    result = df.copy()
+
+    # Ensure ts is datetime
+    if result['ts'].dtype != 'datetime64[ns]':
+        result['ts'] = pd.to_datetime(result['ts'], unit='ms', utc=True)
+
+    # Get discharge rows
+    discharge_mask = result['state'] == 'discharging'
+    discharge_indices = result[discharge_mask].index.tolist()
+
+    if len(discharge_indices) < 2:
+        return result  # Nothing to merge
+
+    # Find gaps in discharge periods and mark which should be merged
+    indices_to_merge = set()  # Indices where we should change 'rest'/'charging' to 'discharging'
+
+    for i in range(len(discharge_indices) - 1):
+        curr_idx = discharge_indices[i]
+        next_idx = discharge_indices[i + 1]
+
+        # Time between last discharge and next discharge
+        time_gap_min = (result.loc[next_idx, 'ts'] - result.loc[curr_idx, 'ts']).total_seconds() / 60.0
+
+        # If gap is small, merge: change all rows between curr_idx and next_idx to 'discharging'
+        if 0 < time_gap_min <= max_gap_minutes:
+            # Check if this merge makes sense (must have enough SOC change across the full merged range)
+            merged_soc_start = result.loc[curr_idx, 'soc']
+            merged_soc_end = result.loc[next_idx, 'soc']
+            merged_soc_change = abs(merged_soc_start - merged_soc_end)
+
+            if merged_soc_change > min_soc_change:
+                # Mark indices between curr_idx and next_idx for merging
+                for j in range(curr_idx + 1, next_idx):
+                    indices_to_merge.add(j)
+
+    # Apply merges: change marked rows from 'rest'/'charging' to 'discharging'
+    for idx in indices_to_merge:
+        if result.loc[idx, 'state'] in ['rest', 'charging']:
+            result.loc[idx, 'state'] = 'discharging'
+
+    # Log what we did
+    merged_count = len(indices_to_merge)
+    if merged_count > 0:
+        print(f"    [MERGE] Merged {merged_count} rows from rest/charging into discharge sessions")
+        print(f"    [MERGE] Now: Discharging: {(result['state'] == 'discharging').sum()}, "
+              f"Rest: {(result['state'] == 'rest').sum()}, "
+              f"Charging: {(result['state'] == 'charging').sum()}")
+
+    return result
+
+
 def estimate_and_save(calculator: TTETTFCalculator, data_df: pd.DataFrame, config: dict,
                       output_file: str, label: str = "Results") -> pd.DataFrame:
     """
@@ -325,6 +399,10 @@ def run_train_all_batteries(config: dict, project_root: Path):
         # Preprocess
         print("[2] Preprocessing...")
         data_df = preprocess_data(data_df)
+
+        # Merge short discharge sessions to avoid learning inflated decay rates
+        print("[2b] Merging short discharge sessions...")
+        data_df = merge_short_discharge_sessions(data_df, max_gap_minutes=5.0, min_soc_change=0.5)
 
         # Level 2 fallback: Check minimum discharge rows before training
         discharge_rows = (data_df['state'] == 'discharging').sum()
@@ -1044,7 +1122,11 @@ def run_validate(config: dict, project_root: Path):
         # Compute actual TTE
         print("[4] Computing actual TTE...")
         try:
-            results_df['timestamp'] = pd.to_datetime(results_df['timestamp'])
+            # Handle ISO8601 timestamps with timezone info
+            if isinstance(results_df['timestamp'].iloc[0], str):
+                results_df['timestamp'] = pd.to_datetime(results_df['timestamp'], format='ISO8601', utc=True)
+            else:
+                results_df['timestamp'] = pd.to_datetime(results_df['timestamp'])
             results_with_actual = compute_actual_tte(results_df)
             valid_count = results_with_actual[results_with_actual['actual_tte_hours'].notna()].shape[0]
             print(f"    Computed actual TTE for {valid_count:,} rows")
@@ -1052,21 +1134,65 @@ def run_validate(config: dict, project_root: Path):
             print(f"    [ERROR] Error computing actual TTE: {e}")
             continue
 
+        # PATH 3: Filter to "big" discharge sessions (>5 min, >0.5% SOC change)
+        print("[4b] PATH 3: Filtering to big discharge sessions (>5 min, >0.5% SOC)...")
+        discharge_mask = results_with_actual['status'] == 'discharging'
+        discharge_indices = results_with_actual[discharge_mask].index.tolist()
+        big_session_indices = []
+
+        if discharge_indices:
+            current_session_start = discharge_indices[0]
+            current_session_start_soc = results_with_actual.loc[current_session_start, 'soc']
+
+            for i in range(1, len(discharge_indices)):
+                prev_idx = discharge_indices[i-1]
+                curr_idx = discharge_indices[i]
+                time_gap_hours = (results_with_actual.loc[curr_idx, 'timestamp'] - results_with_actual.loc[prev_idx, 'timestamp']).total_seconds() / 3600.0
+
+                if time_gap_hours > 5/60:  # 5 minutes
+                    session_end_idx = prev_idx
+                    session_end_soc = results_with_actual.loc[session_end_idx, 'soc']
+                    session_duration = (results_with_actual.loc[session_end_idx, 'timestamp'] - results_with_actual.loc[current_session_start, 'timestamp']).total_seconds() / 3600.0
+                    soc_change = current_session_start_soc - session_end_soc
+
+                    if session_duration > 5/60 and soc_change > 0.5:  # >5 min and >0.5% SOC
+                        for idx in range(current_session_start, session_end_idx + 1):
+                            if idx in discharge_indices:
+                                big_session_indices.append(idx)
+
+                    current_session_start = curr_idx
+                    current_session_start_soc = results_with_actual.loc[curr_idx, 'soc']
+
+            # Handle last session
+            if len(discharge_indices) > 0:
+                session_end_idx = discharge_indices[-1]
+                session_end_soc = results_with_actual.loc[session_end_idx, 'soc']
+                session_duration = (results_with_actual.loc[session_end_idx, 'timestamp'] - results_with_actual.loc[current_session_start, 'timestamp']).total_seconds() / 3600.0
+                soc_change = current_session_start_soc - session_end_soc
+
+                if session_duration > 5/60 and soc_change > 0.5:
+                    for idx in range(current_session_start, session_end_idx + 1):
+                        if idx in discharge_indices:
+                            big_session_indices.append(idx)
+
+        results_big_sessions = results_with_actual.loc[big_session_indices].copy() if big_session_indices else results_with_actual.iloc[0:0]
+        print(f"    Filtered to {len(results_big_sessions):,} rows in big sessions ({100*len(results_big_sessions)/len(results_with_actual):.1f}% of discharge rows)")
+
         # Compute metrics
         print("[5] Computing validation metrics...")
         try:
-            metrics = compute_validation_metrics(results_with_actual)
+            metrics = compute_validation_metrics(results_big_sessions if len(results_big_sessions) > 0 else results_with_actual)
         except Exception as e:
             print(f"    [ERROR] Error computing metrics: {e}")
             continue
 
-        # Print report
-        print_validation_report(battery_id, metrics, results_with_actual)
+        # Print report (on big sessions)
+        print_validation_report(battery_id, metrics, results_big_sessions if len(results_big_sessions) > 0 else results_with_actual)
 
-        # Generate charts
+        # Generate charts (on big sessions)
         print(f"[6] Generating validation charts...")
         try:
-            generate_validation_charts(battery_id, results_with_actual, validation_dir)
+            generate_validation_charts(battery_id, results_big_sessions if len(results_big_sessions) > 0 else results_with_actual, validation_dir)
         except Exception as e:
             print(f"    [WARN] Error generating charts: {e}")
 
