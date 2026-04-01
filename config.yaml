@@ -1,0 +1,37 @@
+# ============================================
+# TTE/TTF Multi-Battery Configuration
+# ============================================
+
+execution:
+  # Mode selector
+  mode: "train_all_batteries"           # Options: train_all_batteries, apply_battery
+
+  # Pattern label (e.g., month, version)
+  # Used when saving patterns to database
+  patterns_label: "september_2025"
+
+  # Optional: Filter training data by month (faster training)
+  # Format: "YYYY-MM" (e.g., "2025-03" for March 2025)
+  # Leave empty to use all available data
+  training_month: "2025-03"             # "" = all data, "2025-03" = March only
+
+  # Optional: Filter apply data by month (for apply_battery mode)
+  # Format: "YYYY-MM" (e.g., "2025-03" for March 2025)
+  # Leave empty to use all available data
+  apply_month: ""                       # "" = all data, "2025-03" = March only
+
+output:
+  output_dir: output
+  training_data_dir: training_data
+
+database:
+  # SQLite database file path
+  # Stores all battery patterns (decay rate statistics)
+  path: "battery_patterns.db"
+
+tte_ttf:
+  current_threshold_ma: 50.0
+  ema_window_minutes: 20
+  session_min_duration_minutes: 15.0
+  session_min_energy_ah: 1.0
+  tte_ttf_smoothing_factor: 0.15

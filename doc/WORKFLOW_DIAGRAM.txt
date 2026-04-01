@@ -1,0 +1,255 @@
+================================================================================
+  TTE/TTF SYSTEM WORKFLOW - TRAIN vs TEST vs APPLY
+================================================================================
+
+SCENARIO 1: LEARNING PHASE (TRAIN_TEST_SPLIT)
+──────────────────────────────────────────────
+
+    config.yaml: execution.mode = "train_test_split"
+
+    Input Data (Full Month)
+           │
+           ├─────────────────────────────────────────────────────┐
+           │                                                       │
+           ▼                                                       ▼
+
+      TRAINING SET                                        TEST SET
+      (Sept 1-25)                                      (Sept 26-30)
+      54,632 samples                                   18,608 samples
+           │                                                │
+           ▼                                                │
+
+      [TRAIN ALGORITHM]                                    │
+      - Learn SOC decay rates                             │
+      - Learn load patterns                              │
+           │                                               │
+           ▼                                               │
+
+      Patterns Learned                                     │
+      ✓ decay_rate[soc=50%][current=3A] = 0.2%/min       │
+      ✓ decay_rate[soc=50%][current=6A] = 0.4%/min       │
+      ✓ load_class[cv=0.1] = 'steady'                    │
+           │                                               │
+           ▼                                               ▼
+
+      [ESTIMATE TTE]                                  [ESTIMATE TTE]
+      (using learned patterns)                    (using learned patterns)
+           │                                               │
+           ▼                                               ▼
+
+      tte_ttf_train_results.csv                   tte_ttf_test_results.csv
+      - 54,632 rows                              - 18,608 rows
+      - TTE mean: 5.23h                         - TTE mean: 5.19h
+      - TTE std: 2.15h                          - TTE std: 2.18h
+      - Coverage: 98.5%                         - Coverage: 97.8%
+           │                                               │
+           └─────────────────────────┬─────────────────────┘
+                                     │
+                                     ▼
+
+                    [COMPARE METRICS]
+
+                    Metric              Train    Test
+                    ──────────────────────────────────
+                    Total samples       54,632   18,608
+                    TTE coverage        98.5%    97.8%
+                    Mean TTE (h)        5.23     5.19
+                    Std TTE (h)         2.15     2.18
+                    Drift (h)           +0.04    -0.02
+
+                                     │
+                                     ▼
+
+                    [SAVE PATTERNS]
+                    outputs/patterns/september_2025_<timestamp>/
+                    ├── metadata.json
+                    ├── soc_decay_analyzer.pkl    ◄── SAVE THIS!
+                    └── load_classifier.pkl       ◄── SAVE THIS!
+
+                    Pattern files now available for reuse!
+
+
+SCENARIO 2: APPLICATION PHASE (APPLY)
+──────────────────────────────────────
+
+    config.yaml: execution.mode = "apply"
+
+    New Data (Next Month)
+           │
+           ▼
+
+      October Data
+      (67,000 new samples)
+      [NO TRAINING NEEDED]
+           │
+           ▼
+
+      [LOAD SAVED PATTERNS]
+      from: outputs/patterns/september_2025_<timestamp>/
+      ✓ Loaded soc_decay_analyzer.pkl
+      ✓ Loaded load_classifier.pkl
+           │
+           ▼
+
+      Patterns Ready
+      ✓ decay_rate[soc=50%][current=3A] = 0.2%/min  (from training)
+      ✓ decay_rate[soc=50%][current=6A] = 0.4%/min  (from training)
+      ✓ load_class[cv=0.1] = 'steady'               (from training)
+           │
+           ▼
+
+      [ESTIMATE TTE]
+      (using LOADED patterns, NO retraining!)
+      ⚡ INSTANT (no learning overhead)
+           │
+           ▼
+
+      tte_ttf_results_applied.csv
+      - 67,000 rows
+      - TTE estimates ready
+      - Complete in ~2 seconds!
+           │
+           ▼
+
+      Results immediately available for dashboard/app
+
+
+COMPARISON: TRAIN TIME vs APPLY TIME
+─────────────────────────────────────
+
+    TRAIN MODE (Learning)
+    ┌──────────────────────────────────┐
+    │ Load data:           1 second     │
+    │ Preprocess:          2 seconds    │
+    │ TRAIN algorithm:     5 seconds    │ ◄── Takes time (learning)
+    │ Estimate TTE:        3 seconds    │
+    │ Save patterns:       2 seconds    │
+    ├──────────────────────────────────┤
+    │ TOTAL:              ~13 seconds   │
+    └──────────────────────────────────┘
+
+    Output: patterns/ (can be reused many times!)
+
+
+    APPLY MODE (No Training)
+    ┌──────────────────────────────────┐
+    │ Load data:           1 second     │
+    │ Preprocess:          2 seconds    │
+    │ LOAD patterns:       <1 second    │ ◄── Very fast (just load)
+    │ Estimate TTE:        1 second     │ ◄── No retraining
+    ├──────────────────────────────────┤
+    │ TOTAL:               ~4 seconds   │
+    └──────────────────────────────────┘
+
+    Output: results CSV (ready to use)
+
+    ⚡ 3.25x faster because no training!
+
+
+HOW TO CHOOSE MODE
+───────────────────
+
+    Starting fresh with new data?
+    ├─ YES → Use TRAIN_TEST_SPLIT first
+    │        (validate on yourself before deploying)
+    │
+    └─ NO (have existing patterns from past training?)
+       ├─ YES → Use APPLY mode (fast!)
+       │
+       └─ NO → Use TRAIN_ONLY (learn all available data)
+
+
+DECISION TREE
+─────────────
+
+    ╔════════════════════════════════════════════════════════════════════╗
+    ║ "Do I have saved patterns from previous training?"               ║
+    ╚═══════════════════════╦════════════════════════════════════╦═════╝
+                            │                                     │
+                        YES │                                 NO  │
+                            │                                     │
+                    ┌───────▼──────────┐              ┌──────────▼──────┐
+                    │  mode: "apply"   │              │ "train_only" or │
+                    │                  │              │ "train_test_    │
+                    │ Fast!            │              │  split"         │
+                    │ ~2 seconds       │              │                 │
+                    │                  │              │ Slower (learn)  │
+                    │ No retraining    │              │ ~10-15 seconds  │
+                    │                  │              │                 │
+                    │ Perfect for      │              │ But creates     │
+                    │ production!      │              │ patterns!       │
+                    └──────────────────┘              └─────────────────┘
+
+
+TYPICAL DEPLOYMENT TIMELINE
+────────────────────────────
+
+Week 1: Learning Phase
+┌─────────────────────────────────────────────────────┐
+│ Monday:   Collect historical data (Sept 1-25)      │
+│ Tuesday:  python src/main.py [train_test_split]    │
+│           Review comparison metrics                 │
+│ Wednesday: Patterns saved to outputs/patterns/      │
+│           Ready for production!                     │
+└─────────────────────────────────────────────────────┘
+
+Week 2+: Production Phase
+┌─────────────────────────────────────────────────────┐
+│ Daily:    New data arrives (Oct 1, 2, 3, ...)      │
+│           python src/main.py [apply]                │
+│           ⚡ Fast! Results in ~2 seconds            │
+│           No retraining needed                      │
+└─────────────────────────────────────────────────────┘
+
+When to retrain?
+┌─────────────────────────────────────────────────────┐
+│ Coverage drops < 80%?     → Retrain                │
+│ Stability (std) increases 50%? → Retrain           │
+│ TTE drift > 1 hour?       → Retrain                │
+│ New battery pack?         → Retrain                │
+│ Otherwise:                → Keep applying!         │
+└─────────────────────────────────────────────────────┘
+
+
+FILE LOCATIONS
+──────────────
+
+    config.yaml
+    ↓
+    [Specifies: mode = train_test_split / train_only / apply]
+    ↓
+    python src/main.py
+    ↓
+    outputs/
+    ├── tte_ttf_train_results.csv      (if train_test_split)
+    ├── tte_ttf_test_results.csv       (if train_test_split)
+    ├── tte_ttf_results_applied.csv    (if apply)
+    ├── tte_ttf_results_full.csv       (if train_only or full)
+    ├── train_test_comparison.csv      (if train_test_split)
+    └── patterns/
+        └── <label>_<timestamp>/
+            ├── metadata.json
+            ├── soc_decay_analyzer.pkl      ◄── Saved patterns
+            └── load_classifier.pkl         ◄── Ready to reload!
+
+
+SUMMARY
+───────
+
+┌─────────────────────────────────────────────────────────────┐
+│ THREE MODES, ONE COMMAND                                    │
+│                                                             │
+│ TRAIN (learn patterns):                                    │
+│   config.yaml: mode = "train_test_split" or "train_only"  │
+│   python src/main.py                                       │
+│   Output: patterns/ saved, results generated               │
+│                                                             │
+│ APPLY (use patterns):                                      │
+│   config.yaml: mode = "apply"                              │
+│   python src/main.py                                       │
+│   Output: results generated FAST, no retraining            │
+│                                                             │
+│ Just edit config.yaml and run!                             │
+└─────────────────────────────────────────────────────────────┘
+
+================================================================================

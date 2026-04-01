@@ -1,0 +1,22 @@
+# Core Data Science & Analysis
+pandas>=2.2.0
+numpy>=1.26.0
+scipy>=1.15.0
+
+# Visualization
+matplotlib>=3.9.0
+seaborn>=0.13.0
+
+# Time/Timezone handling
+pytz>=2025.1
+
+# Jupyter & Notebooks
+jupyter>=1.0.0
+jupyterlab>=4.0.0
+ipython>=9.0.0
+
+# Data formats
+pyarrow>=14.0.0  # For parquet file support
+
+# Optional but recommended
+notebook>=7.0.0
