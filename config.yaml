@@ -35,3 +35,9 @@ tte_ttf:
   session_min_duration_minutes: 15.0
   session_min_energy_ah: 1.0
   tte_ttf_smoothing_factor: 0.15
+
+  # Current range thresholds (in Amperes) for bucketing decay rates
+  # N thresholds → N+1 buckets. Default: [0.5, 2.0, 5.0] → low, medium, high, very_high
+  # Adjust based on actual current distribution: use percentiles p25, p60, p85
+  # Example for wider range: [1.0, 5.0, 15.0] → low, medium, high, very_high
+  current_thresholds_a: [0.5, 2.0, 5.0]

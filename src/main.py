@@ -97,7 +97,7 @@ def preprocess_data(df):
     print("    [STATE] Determining charging/discharging/rest states...")
     df['pack_current_net'] = df['ic'] - df['id']
     df['state'] = get_load_status_vectorized(df['pack_current_net'].astype(float))
-    df['current_a'] = df['pack_current_net'].abs()
+    df['current_a'] = df['pack_current_net'].abs() / 1000.0  # convert mA → A
 
     print(f"    [STATE] State distribution:")
     print(f"      - Charging: {(df['state'] == 'charging').sum()}")
@@ -219,7 +219,8 @@ def run_train_test_split_REMOVED(config: dict, data_df: pd.DataFrame, project_ro
     calculator = TTETTFCalculator(
         session_min_duration_minutes=tte_cfg.get('session_min_duration_minutes', 15.0),
         session_min_energy_ah=tte_cfg.get('session_min_energy_ah', 1.0),
-        tte_ttf_smoothing_factor=tte_cfg.get('tte_ttf_smoothing_factor', 0.15)
+        tte_ttf_smoothing_factor=tte_cfg.get('tte_ttf_smoothing_factor', 0.15),
+        current_thresholds=tte_cfg.get('current_thresholds_a', [0.5, 2.0, 5.0])
     )
 
     print("    [TRAINING] Learning SOC decay patterns and load profiles from training data...")
@@ -290,7 +291,8 @@ def run_train_only(config: dict, data_df: pd.DataFrame, project_root: Path) -> p
     calculator = TTETTFCalculator(
         session_min_duration_minutes=tte_cfg.get('session_min_duration_minutes', 15.0),
         session_min_energy_ah=tte_cfg.get('session_min_energy_ah', 1.0),
-        tte_ttf_smoothing_factor=tte_cfg.get('tte_ttf_smoothing_factor', 0.15)
+        tte_ttf_smoothing_factor=tte_cfg.get('tte_ttf_smoothing_factor', 0.15),
+        current_thresholds=tte_cfg.get('current_thresholds_a', [0.5, 2.0, 5.0])
     )
 
     print("    [TRAINING] Learning SOC decay patterns and load profiles...")
@@ -359,7 +361,8 @@ def run_apply(config: dict, data_df: pd.DataFrame, project_root: Path) -> pd.Dat
     calculator = TTETTFCalculator(
         session_min_duration_minutes=tte_cfg.get('session_min_duration_minutes', 15.0),
         session_min_energy_ah=tte_cfg.get('session_min_energy_ah', 1.0),
-        tte_ttf_smoothing_factor=tte_cfg.get('tte_ttf_smoothing_factor', 0.15)
+        tte_ttf_smoothing_factor=tte_cfg.get('tte_ttf_smoothing_factor', 0.15),
+        current_thresholds=tte_cfg.get('current_thresholds_a', [0.5, 2.0, 5.0])
     )
 
     pattern_mgr = PatternManager(str(project_root / config['output']['output_dir'] / 'patterns'))
@@ -412,7 +415,8 @@ def run_monthly(config: dict, data_df: pd.DataFrame, project_root: Path) -> pd.D
     calculator = TTETTFCalculator(
         session_min_duration_minutes=tte_cfg.get('session_min_duration_minutes', 15.0),
         session_min_energy_ah=tte_cfg.get('session_min_energy_ah', 1.0),
-        tte_ttf_smoothing_factor=tte_cfg.get('tte_ttf_smoothing_factor', 0.15)
+        tte_ttf_smoothing_factor=tte_cfg.get('tte_ttf_smoothing_factor', 0.15),
+        current_thresholds=tte_cfg.get('current_thresholds_a', [0.5, 2.0, 5.0])
     )
 
     print("    [TRAINING] Learning SOC decay patterns and load profiles from data...")
@@ -459,7 +463,8 @@ def run_full(config: dict, data_df: pd.DataFrame, project_root: Path) -> pd.Data
     calculator = TTETTFCalculator(
         session_min_duration_minutes=tte_cfg.get('session_min_duration_minutes', 15.0),
         session_min_energy_ah=tte_cfg.get('session_min_energy_ah', 1.0),
-        tte_ttf_smoothing_factor=tte_cfg.get('tte_ttf_smoothing_factor', 0.15)
+        tte_ttf_smoothing_factor=tte_cfg.get('tte_ttf_smoothing_factor', 0.15),
+        current_thresholds=tte_cfg.get('current_thresholds_a', [0.5, 2.0, 5.0])
     )
 
     print("    [TRAINING] Learning SOC decay patterns and load profiles from all data...")

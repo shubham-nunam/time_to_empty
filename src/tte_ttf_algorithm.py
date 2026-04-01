@@ -85,15 +85,16 @@ class SOCDecayRateAnalyzer:
     - Current directly informs rate selection
     """
 
-    def __init__(self, soc_step: int = 5, current_bins: int = 5):
+    def __init__(self, soc_step: int = 5, current_thresholds: list = None):
         """
         Parameters:
         -----------
         soc_step : SOC window size (5% = 0-5, 5-10, ... 95-100)
-        current_bins : how many current ranges to track per SOC window
+        current_thresholds : list of boundary values in Amperes for bucketing
+                            E.g., [0.5, 2.0, 5.0] → low, medium, high, very_high
         """
         self.soc_step = soc_step
-        self.current_bins = current_bins
+        self.current_thresholds = current_thresholds or [0.5, 2.0, 5.0]
         # Structure: [state][load_class][soc_start][current_range] = [decay_rates]
         self.discharge_rates = {}  # soc_window, load_class, current_range → [%/min values]
         self.charge_rates = {}
@@ -318,15 +319,16 @@ class SOCDecayRateAnalyzer:
         return tte_hours if tte_hours > 0 else None
 
     def _get_current_range_key(self, current_a: float) -> str:
-        """Bin current into ranges for pattern matching"""
-        if current_a < 0.5:
-            return 'low'  # 0-0.5A
-        elif current_a < 2.0:
-            return 'medium'  # 0.5-2A
-        elif current_a < 5.0:
-            return 'high'  # 2-5A
-        else:
-            return 'very_high'  # 5A+
+        """Bin current into ranges based on configurable thresholds (in Amperes)."""
+        labels = ['low', 'medium', 'high', 'very_high', 'extreme', 'critical']
+
+        # Find which threshold bin this current falls into
+        for i, threshold in enumerate(self.current_thresholds):
+            if current_a < threshold:
+                return labels[i]
+
+        # If current >= highest threshold, return the last label
+        return labels[len(self.current_thresholds)]
 
 
 class EnergySession:
@@ -365,19 +367,21 @@ class SimpleTTECalculator:
     def __init__(self,
                  session_min_duration_minutes: float = 15.0,
                  session_min_energy_ah: float = 1.0,
-                 tte_ttf_smoothing_factor: float = 0.2):
+                 tte_ttf_smoothing_factor: float = 0.2,
+                 current_thresholds: list = None):
         """
         Parameters:
         -----------
         session_min_duration_minutes : minimum session duration for valid TTE/TTF (default 15)
         session_min_energy_ah : minimum energy change for valid TTE/TTF (default 1.0)
         tte_ttf_smoothing_factor : smoothing factor for TTE/TTF (0-1, default 0.2 for stability)
+        current_thresholds : list of current range thresholds in Amperes (default [0.5, 2.0, 5.0])
         """
         self.session_min_duration_minutes = session_min_duration_minutes
         self.session_min_energy_ah = session_min_energy_ah
         self.smoothing_factor = tte_ttf_smoothing_factor
 
-        self.soc_decay = SOCDecayRateAnalyzer(soc_step=5)
+        self.soc_decay = SOCDecayRateAnalyzer(soc_step=5, current_thresholds=current_thresholds)
         self.load_classifier = LoadClassifier(window_samples=30)
 
         self._current_session: Optional[EnergySession] = None
