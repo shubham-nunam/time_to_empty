@@ -41,7 +41,7 @@ database:
 tte_ttf:
   current_threshold_ma: 50.0
   ema_window_minutes: 20
-  decay_rate_window_minutes: 60.0          # Rolling window for calculating SOC decay rates during training
+  decay_rate_window_minutes: 30       # Rolling window (30-min balance between accuracy & stability)
 
   # Fallback Level 2: minimum discharge rows for reliable training
   min_discharge_rows: 100                  # warn if training data has fewer discharge rows
