@@ -25,7 +25,7 @@ PATTERNS_DIR = Path(__file__).resolve().parent.parent / "training_data"
 @st.cache_data
 def read_export(csv_path: str) -> pd.DataFrame:
     df = pd.read_csv(csv_path)
-    df["timestamp"] = pd.to_datetime(df["timestamp"])
+    df["timestamp"] = pd.to_datetime(df["timestamp"], format='ISO8601')
     df = df.sort_values("timestamp").reset_index(drop=True)
     for c in ("tte_hours", "ttf_hours"):
         if c in df.columns:
