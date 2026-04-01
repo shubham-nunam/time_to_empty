@@ -955,7 +955,39 @@ def generate_validation_charts(battery_id: str, results_df: pd.DataFrame, valida
     fig.savefig(validation_dir / f'05_calibration_{battery_id}.png', dpi=150)
     plt.close(fig)
 
-    print(f"    [OK] Generated 5 validation charts")
+    # ========== Chart 6: Time vs SOC ==========
+    fig, ax = plt.subplots(figsize=(14, 6))
+    discharge_sorted = discharge.sort_values('timestamp')
+
+    scatter = ax.scatter(discharge_sorted['timestamp'], discharge_sorted['soc'],
+                        c=discharge_sorted['status'].map({'discharging': 0, 'charging': 1, 'rest': 2}),
+                        cmap='viridis', alpha=0.6, s=8)
+    ax.set_xlabel('Time', fontsize=11)
+    ax.set_ylabel('SOC (%)', fontsize=11)
+    ax.set_title(f'{battery_id} — Time vs SOC', fontsize=13, fontweight='bold')
+    ax.set_ylim(0, 105)
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(validation_dir / f'06_time_vs_soc_{battery_id}.png', dpi=150)
+    plt.close(fig)
+
+    # ========== Chart 7: Time vs TTE_hours ==========
+    fig, ax = plt.subplots(figsize=(14, 6))
+    discharge_with_tte = discharge_sorted[discharge_sorted['tte_hours'].notna()]
+
+    scatter = ax.scatter(discharge_with_tte['timestamp'], discharge_with_tte['tte_hours'],
+                        c=discharge_with_tte['soc'], cmap='RdYlGn', alpha=0.6, s=8)
+    ax.set_xlabel('Time', fontsize=11)
+    ax.set_ylabel('TTE Hours', fontsize=11)
+    ax.set_title(f'{battery_id} — Time vs TTE (colored by SOC)', fontsize=13, fontweight='bold')
+    ax.grid(True, alpha=0.3)
+    cbar = plt.colorbar(scatter, ax=ax)
+    cbar.set_label('SOC (%)', fontsize=10)
+    fig.tight_layout()
+    fig.savefig(validation_dir / f'07_time_vs_tte_{battery_id}.png', dpi=150)
+    plt.close(fig)
+
+    print(f"    [OK] Generated 7 validation charts")
 
 
 def print_validation_report(battery_id: str, metrics: dict, results_df: pd.DataFrame):
