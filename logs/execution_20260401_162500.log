@@ -1,0 +1,111 @@
+
+================================================================================
+TTE/TTF Pipeline Started - 2026-04-01 16:25:00
+Log file: E:\time_to_empty\logs\execution_20260401_162500.log
+================================================================================
+
+================================================================================
+TTE/TTF Pipeline - Mode: TRAIN_ALL_BATTERIES
+================================================================================
+
+================================================================================
+MODE: TRAIN_ALL_BATTERIES
+================================================================================
+
+[DISCOVERED] 1 battery files:
+  [OK] SE0100000092: SE0100000092.parquet
+
+================================================================================
+[TRAINING] Battery: SE0100000092
+================================================================================
+[1] Loading SE0100000092 data...
+    Loaded 995,137 rows
+    Filtering to month: 2025-03...
+    Filtered to 73,520 rows for 2025-03
+[2] Preprocessing...
+    [DTO] Transforming data with dto_ness_parquet...
+    [DTO] Columns after DTO: ['ts', 'ic', 'id', 'lv', 'soc', 'tmp', 'soh', 'strv_1', 'strv_2', 'strv_3', 'strv_4', 'strv_5', 'strv_6', 'strv_7', 'strv_8', 'strv_9', 'strv_10', 'strv_11', 'strv_12', 'strv_13', 'strv_14', 'strv_15', 'strv_16', 'CyCnt', 'FullCap', 'BT1', 'BT2', 'BT3', 'BT4']
+    [TIME] Adding time columns...
+    [STATE] Determining charging/discharging/rest states...
+    [STATE] State distribution:
+      - Charging: 18179
+      - Discharging: 45595
+      - Rest: 9746
+      - NaN: 0
+[2b] Merging short discharge sessions...
+    [MERGE] Merged 57 rows from rest/charging into discharge sessions
+    [MERGE] Now: Discharging: 45652, Rest: 9714, Charging: 18154
+[3] Training algorithm on SE0100000092...
+    Learning SOC decay patterns and load profiles...
+    [DECAY_RATE] Learning SOC decay rates from historical data...
+    [DECAY_RATE] Trained in 4ms
+    [DECAY_RATE] Discharge patterns: 118, Charge patterns: 90
+[4] Estimating TTE/TTF for SE0100000092...
+
+[3] Running TTE/TTF estimation (Battery SE0100000092)...
+    [Config] TTE/TTF Parameters:
+      - Current threshold: 50.0 mA
+      - EMA window: 20 minutes
+      - Session min duration: 0.0 minutes
+      - Session min energy: 0.0 Ah
+      - TTE/TTF smoothing: 0.15
+  Processed 2,000 rows
+  Processed 4,000 rows
+  Processed 6,000 rows
+  Processed 8,000 rows
+  Processed 10,000 rows
+  Processed 12,000 rows
+  Processed 14,000 rows
+  Processed 16,000 rows
+  Processed 18,000 rows
+  Processed 20,000 rows
+  Processed 22,000 rows
+  Processed 24,000 rows
+  Processed 26,000 rows
+  Processed 28,000 rows
+  Processed 30,000 rows
+  Processed 32,000 rows
+  Processed 34,000 rows
+  Processed 36,000 rows
+  Processed 38,000 rows
+  Processed 40,000 rows
+  Processed 42,000 rows
+  Processed 44,000 rows
+  Processed 46,000 rows
+  Processed 48,000 rows
+  Processed 50,000 rows
+  Processed 52,000 rows
+  Processed 54,000 rows
+  Processed 56,000 rows
+  Processed 58,000 rows
+  Processed 60,000 rows
+  Processed 62,000 rows
+  Processed 64,000 rows
+  Processed 66,000 rows
+  Processed 68,000 rows
+  Processed 70,000 rows
+  Processed 72,000 rows
+    TTE/TTF estimation time: 5.42s
+
+[4] Results Summary (Battery SE0100000092)
+    Generated: 73,520 rows
+
+    Status Distribution:
+status
+    discharging    45652
+    charging       18154
+    rest            9714
+
+    TTE/TTF Coverage:
+    TTE populated: 45,626 / 73,520
+    TTF populated: 18,137 / 73,520
+
+    Sample Output (first 5 rows):
+                         timestamp  voltage_v  current_a       status  tte_hours  ttf_hours
+    0 2025-03-12 09:38:01.367000+00:00    53810.0       0.65  discharging  17.915136        NaN
+    1 2025-03-12 09:38:19.478000+00:00    53820.0       0.00         rest        NaN        NaN
+    2 2025-03-12 09:38:37.604000+00:00    53840.0       0.00         rest        NaN        NaN
+    3 2025-03-12 09:39:09.827000+00:00    53870.0       1.23     charging        NaN   0.304522
+    4 2025-03-12 09:39:27.953000+00:00    53900.0       1.45     charging        NaN   0.304522
+
+[5] Saving Battery SE0100000092 results to E:\time_to_empty\output\tte_ttf_SE0100000092.csv...

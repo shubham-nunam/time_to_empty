@@ -1,0 +1,39 @@
+
+================================================================================
+TTE/TTF Pipeline Started - 2026-04-01 16:24:43
+Log file: E:\time_to_empty\logs\execution_20260401_162443.log
+================================================================================
+
+================================================================================
+TTE/TTF Pipeline - Mode: TRAIN_ALL_BATTERIES
+================================================================================
+
+================================================================================
+MODE: TRAIN_ALL_BATTERIES
+================================================================================
+
+[DISCOVERED] 1 battery files:
+  [OK] SE0100000092: SE0100000092.parquet
+
+================================================================================
+[TRAINING] Battery: SE0100000092
+================================================================================
+[1] Loading SE0100000092 data...
+    Loaded 995,137 rows
+    Filtering to month: 2025-03...
+    Filtered to 73,520 rows for 2025-03
+[2] Preprocessing...
+    [DTO] Transforming data with dto_ness_parquet...
+    [DTO] Columns after DTO: ['ts', 'ic', 'id', 'lv', 'soc', 'tmp', 'soh', 'strv_1', 'strv_2', 'strv_3', 'strv_4', 'strv_5', 'strv_6', 'strv_7', 'strv_8', 'strv_9', 'strv_10', 'strv_11', 'strv_12', 'strv_13', 'strv_14', 'strv_15', 'strv_16', 'CyCnt', 'FullCap', 'BT1', 'BT2', 'BT3', 'BT4']
+    [TIME] Adding time columns...
+    [STATE] Determining charging/discharging/rest states...
+    [STATE] State distribution:
+      - Charging: 18179
+      - Discharging: 45595
+      - Rest: 9746
+      - NaN: 0
+[2b] Merging short discharge sessions...
+    [MERGE] Merged 57 rows from rest/charging into discharge sessions
+    [MERGE] Now: Discharging: 45652, Rest: 9714, Charging: 18154
+[3] Training algorithm on SE0100000092...
+    Learning SOC decay patterns and load profiles...

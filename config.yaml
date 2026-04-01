@@ -8,6 +8,10 @@ execution:
 
   # Pattern label (e.g., month, version)
   # Used when saving patterns to database, or loading for validation
+  patterns_label: "march_2025_60min_window"
+
+  # Pattern label (e.g., month, version)
+  # Used when saving patterns to database, or loading for validation
   patterns_label: "september_2025"
 
   # Optional: Filter training data by month (faster training)
@@ -22,11 +26,12 @@ execution:
 
   # Validation mode settings
   # Used to validate accuracy of predictions against actual TTE
-  validate_month: ""                    # Filter validation data by month, or "" for all
+  validate_month: "2025-03"             # Match training_month for fair comparison
 
 output:
   output_dir: output
   training_data_dir: training_data
+  # Note: Final validation artifacts saved to output/validation/
 
 database:
   # SQLite database file path
