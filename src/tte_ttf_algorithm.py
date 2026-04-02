@@ -693,31 +693,24 @@ class SimpleTTECalculator:
     def _smooth_with_load_awareness(self, new_value: Optional[float], old_value: Optional[float],
                                      current_load_a: float, state: str = 'discharging') -> Optional[float]:
         """
-        Apply EMA smoothing with asymmetric rate limiting.
+        Apply EMA smoothing with tight rate limiting for ultra-smooth curves.
 
-        Allows DECREASES freely (TTE dropping during discharge is always correct).
-        Caps INCREASES conservatively (0.02h per sample = 1.2 min) to prevent
-        false climbs while still allowing legitimate adjustments.
+        Priority: eliminate sudden jumps and fluctuations.
+        Both increases and decreases are capped at 0.02h per sample (~1.2 min).
         """
         if new_value is None or np.isnan(new_value):
             return old_value
         if old_value is None or np.isnan(old_value):
             return new_value
 
-        # Apply constant EMA smoothing
+        # Apply aggressive EMA smoothing (factor=0.30 = responds slowly to changes)
         smoothing = self.smoothing_factor
         smoothed = smoothing * new_value + (1 - smoothing) * old_value
 
-        # Apply asymmetric rate limiting:
-        # - Decreases allowed freely
-        # - Increases capped at 0.02h per sample (1.2 min)
+        # Apply tight symmetric rate limiting to prevent any sudden jumps
         if old_value is not None and not np.isnan(old_value):
-            change = smoothed - old_value
-            if change > 0:
-                # Increase: cap it conservatively
-                max_increase = 0.02
-                smoothed = old_value + min(change, max_increase)
-            # Decreases allowed freely
+            max_change = self.tte_max_change_per_sample  # 0.02h = 1.2 min
+            smoothed = np.clip(smoothed, old_value - max_change, old_value + max_change)
 
         # Store current load for next iteration
         self._previous_load_a = current_load_a

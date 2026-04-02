@@ -4,7 +4,7 @@
 
 execution:
   # Mode selector
-  mode: "validate"                      # Options: train_all_batteries, apply_battery, validate
+  mode: "train_all_batteries"           # Options: train_all_batteries, apply_battery, validate
 
   # Pattern label (e.g., month, version)
   # Used when saving patterns to database, or loading for validation
@@ -55,14 +55,11 @@ tte_ttf:
   session_high_confidence_minutes: 15.0    # original strict threshold
   session_high_confidence_energy_ah: 1.0   # original strict threshold
 
-  tte_ttf_smoothing_factor: 0.15           # EMA smoothing: controls responsiveness vs noise
+  tte_ttf_smoothing_factor: 0.30           # EMA smoothing: increased for smoother predictions
 
   # TTE smoothing and stability
-  # Simplified approach: constant EMA smoothing + rate limiting
-  # (Removed adaptive smoothing that was causing false TTE increases during load changes)
-  tte_max_change_per_sample: 0.05         # Rate limit: max 0.05h change per sample (~3 min)
-  # Note: high_load_change_threshold_pct and adaptive_smoothing_factor kept for backward compatibility
-  # but are no longer used (will be removed in next refactor)
+  # Tight symmetric rate limiting: max ±0.02h change per sample for ultra-smooth curves
+  tte_max_change_per_sample: 0.02         # Rate limit: max ±0.02h change per sample (no sudden jumps)
 
   # Current range thresholds (in Amperes) for bucketing decay rates
   # N thresholds → N+1 buckets. Default: [0.5, 2.0, 5.0] → low, medium, high, very_high
