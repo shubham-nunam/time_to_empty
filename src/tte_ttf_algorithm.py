@@ -337,11 +337,7 @@ class SOCDecayRateAnalyzer:
         else:
             return None
 
-        # Cap at 24 hours
         tte_hours = tte_minutes / 60.0
-        if tte_hours > 24.0:
-            tte_hours = 24.0
-
         return tte_hours if tte_hours > 0 else None
 
     def _get_current_range_key(self, current_a: float) -> str:
@@ -424,6 +420,8 @@ class SimpleTTECalculator:
         self._last_valid_ts: Optional[pd.Timestamp] = None  # timestamp of last valid TTE
         self.min_soc = 0.0
         self.max_soc = 100.0
+        self.max_tte_hours = 24.0  # default, will be updated during training
+        self.max_ttf_hours = 24.0  # default, will be updated during training
 
     def train(self, data_df: pd.DataFrame,
               soc_col: str = 'soc',
@@ -434,6 +432,38 @@ class SimpleTTECalculator:
               window_minutes: float = 5.0) -> None:
         """Train the calculator from historical data"""
         self.soc_decay.train(data_df, soc_col, current_col, voltage_col, status_col, timestamp_col, window_minutes)
+
+        # Calculate dynamic TTE/TTF caps based on decay rates observed during training
+        # This replaces the hardcoded 24-hour limit with data-driven caps
+
+        # Collect all estimated TTE values from discharge patterns
+        discharge_tte_estimates = []
+        for key, stats in self.soc_decay.discharge_stats.items():
+            # key = (soc_window, load_class, current_range)
+            # Estimate TTE at start of this SOC window (e.g., 50-55%)
+            soc_window = key[0]
+            decay_rate = stats['rate_median']  # %/minute
+            if decay_rate > 0:
+                tte = soc_window / decay_rate  # hours for this SOC window
+                discharge_tte_estimates.append(tte)
+
+        # Collect all estimated TTF values from charge patterns
+        charge_ttf_estimates = []
+        for key, stats in self.soc_decay.charge_stats.items():
+            soc_window = key[0]
+            decay_rate = stats['rate_median']  # %/minute
+            if decay_rate > 0:
+                ttf = soc_window / decay_rate  # hours for this SOC window
+                charge_ttf_estimates.append(ttf)
+
+        # Set caps at 95th percentile of estimates (with reasonable bounds)
+        if discharge_tte_estimates:
+            percentile_95 = np.percentile(discharge_tte_estimates, 95)
+            self.max_tte_hours = min(max(percentile_95, 12.0), 100.0)
+
+        if charge_ttf_estimates:
+            percentile_95 = np.percentile(charge_ttf_estimates, 95)
+            self.max_ttf_hours = min(max(percentile_95, 12.0), 100.0)
 
     def estimate_tte(self,
                      current_soc: float,
@@ -507,7 +537,7 @@ class SimpleTTECalculator:
         # TTE: Empirical decay rate for discharge
         if state == 'discharging' and session_valid and self.soc_decay.is_trained:
             tte_empirical = self.soc_decay.estimate_tte_from_rate(current_soc, ema_current, load_class, 'discharging')
-            if tte_empirical is not None and 0 < tte_empirical <= 24.0:
+            if tte_empirical is not None and 0 < tte_empirical <= self.max_tte_hours:
                 # Apply smoothing
                 tte_smoothed = self._smooth_value(tte_empirical, self._previous_tte)
 
@@ -540,7 +570,7 @@ class SimpleTTECalculator:
         # TTF: Empirical decay rate for charge
         if state == 'charging' and session_valid and self.soc_decay.is_trained:
             ttf_empirical = self.soc_decay.estimate_tte_from_rate(current_soc, ema_current, load_class, 'charging')
-            if ttf_empirical is not None and 0 < ttf_empirical <= 24.0:
+            if ttf_empirical is not None and 0 < ttf_empirical <= self.max_ttf_hours:
                 # Apply smoothing
                 ttf_smoothed = self._smooth_value(ttf_empirical, self._previous_ttf)
 
