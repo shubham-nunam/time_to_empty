@@ -415,7 +415,10 @@ def run_train_all_batteries(config: dict, project_root: Path):
         calculator = TTETTFCalculator(
             session_min_duration_minutes=tte_cfg.get('session_min_duration_minutes', 15.0),
             session_min_energy_ah=tte_cfg.get('session_min_energy_ah', 1.0),
-            tte_ttf_smoothing_factor=tte_cfg.get('tte_ttf_smoothing_factor', 0.15)
+            tte_ttf_smoothing_factor=tte_cfg.get('tte_ttf_smoothing_factor', 0.15),
+            high_load_change_threshold_pct=tte_cfg.get('high_load_change_threshold_pct', 15.0),
+            adaptive_smoothing_factor=tte_cfg.get('adaptive_smoothing_factor', 0.35),
+            tte_max_change_per_sample=tte_cfg.get('tte_max_change_per_sample', 0.05)
         )
 
         print(f"    Learning SOC decay patterns and load profiles...")
@@ -432,12 +435,22 @@ def run_train_all_batteries(config: dict, project_root: Path):
 
         # Estimate
         print(f"[4] Estimating TTE/TTF for {battery_id}...")
+        # Use temp file first, then rename to handle file locks
         output_file = output_dir / f'tte_ttf_{battery_id}.csv'
+        temp_file = output_dir / f'.tte_ttf_{battery_id}_tmp.csv'
         results_df = estimate_and_save(
             calculator, data_df, config,
-            str(output_file),
+            str(temp_file),
             f"Battery {battery_id}"
         )
+        # Rename temp to final (with graceful fallback)
+        if temp_file.exists():
+            try:
+                temp_file.replace(output_file)
+            except PermissionError:
+                # If file is locked, just use the temp file
+                print(f"    [WARN] Could not replace locked file, using temp file")
+                output_file = temp_file
 
         # Save patterns
         print(f"[5] Saving patterns for {battery_id}...")
@@ -529,7 +542,10 @@ def run_apply_battery(config: dict, project_root: Path):
             tte_ttf_smoothing_factor=tte_cfg.get('tte_ttf_smoothing_factor', 0.15),
             current_thresholds=tte_cfg.get('current_thresholds_a', [0.5, 2.0, 5.0]),
             session_high_confidence_minutes=tte_cfg.get('session_high_confidence_minutes', 15.0),
-            session_high_confidence_energy_ah=tte_cfg.get('session_high_confidence_energy_ah', 1.0)
+            session_high_confidence_energy_ah=tte_cfg.get('session_high_confidence_energy_ah', 1.0),
+            high_load_change_threshold_pct=tte_cfg.get('high_load_change_threshold_pct', 15.0),
+            adaptive_smoothing_factor=tte_cfg.get('adaptive_smoothing_factor', 0.35),
+            tte_max_change_per_sample=tte_cfg.get('tte_max_change_per_sample', 0.05)
         )
 
         default_rate = tte_cfg.get('default_discharge_rate_pct_per_min', 0.15)

@@ -392,7 +392,10 @@ class SimpleTTECalculator:
                  tte_ttf_smoothing_factor: float = 0.2,
                  current_thresholds: list = None,
                  session_high_confidence_minutes: float = 15.0,
-                 session_high_confidence_energy_ah: float = 1.0):
+                 session_high_confidence_energy_ah: float = 1.0,
+                 high_load_change_threshold_pct: float = 15.0,
+                 adaptive_smoothing_factor: float = 0.35,
+                 tte_max_change_per_sample: float = 0.05):
         """
         Parameters:
         -----------
@@ -408,6 +411,9 @@ class SimpleTTECalculator:
         self.session_high_conf_minutes = session_high_confidence_minutes
         self.session_high_conf_energy_ah = session_high_confidence_energy_ah
         self.smoothing_factor = tte_ttf_smoothing_factor
+        self.high_load_change_threshold_pct = high_load_change_threshold_pct
+        self.adaptive_smoothing_factor = adaptive_smoothing_factor
+        self.tte_max_change_per_sample = tte_max_change_per_sample
 
         self.soc_decay = SOCDecayRateAnalyzer(soc_step=5, current_thresholds=current_thresholds)
         self.load_classifier = LoadClassifier(window_samples=30)
@@ -416,6 +422,7 @@ class SimpleTTECalculator:
         self._last_soc = None
         self._previous_tte = None
         self._previous_ttf = None
+        self._previous_load_a = None  # Track previous load for change detection
         self._last_valid_tte: Optional[float] = None  # carry-forward for gap filling
         self._last_valid_ts: Optional[pd.Timestamp] = None  # timestamp of last valid TTE
         self.min_soc = 0.0
@@ -538,8 +545,8 @@ class SimpleTTECalculator:
         if state == 'discharging' and session_valid and self.soc_decay.is_trained:
             tte_empirical = self.soc_decay.estimate_tte_from_rate(current_soc, ema_current, load_class, 'discharging')
             if tte_empirical is not None and 0 < tte_empirical <= self.max_tte_hours:
-                # Apply smoothing
-                tte_smoothed = self._smooth_value(tte_empirical, self._previous_tte)
+                # Apply load-aware smoothing with rate limiting
+                tte_smoothed = self._smooth_with_load_awareness(tte_empirical, self._previous_tte, ema_current)
 
                 tte_hours = tte_smoothed
                 self._previous_tte = tte_hours
@@ -571,8 +578,8 @@ class SimpleTTECalculator:
         if state == 'charging' and session_valid and self.soc_decay.is_trained:
             ttf_empirical = self.soc_decay.estimate_tte_from_rate(current_soc, ema_current, load_class, 'charging')
             if ttf_empirical is not None and 0 < ttf_empirical <= self.max_ttf_hours:
-                # Apply smoothing
-                ttf_smoothed = self._smooth_value(ttf_empirical, self._previous_ttf)
+                # Apply load-aware smoothing with rate limiting
+                ttf_smoothed = self._smooth_with_load_awareness(ttf_empirical, self._previous_ttf, ema_current)
 
                 ttf_hours = ttf_smoothed
                 self._previous_ttf = ttf_hours
@@ -682,6 +689,47 @@ class SimpleTTECalculator:
         if old_value is None or np.isnan(old_value):
             return new_value
         return self.smoothing_factor * new_value + (1 - self.smoothing_factor) * old_value
+
+    def _smooth_with_load_awareness(self, new_value: Optional[float], old_value: Optional[float],
+                                     current_load_a: float) -> Optional[float]:
+        """
+        Apply load-aware smoothing with rate limiting to reduce TTE jumps.
+
+        Two mechanisms:
+        1. Adaptive EMA: Increase smoothing during load spikes (>15% change)
+        2. Rate limiting: Cap max TTE change per sample
+        """
+        if new_value is None or np.isnan(new_value):
+            return old_value
+        if old_value is None or np.isnan(old_value):
+            return new_value
+
+        # Detect load change rate
+        if self._previous_load_a is not None and self._previous_load_a > 0.01:
+            load_change_pct = abs(current_load_a - self._previous_load_a) / self._previous_load_a * 100
+        else:
+            load_change_pct = 0
+
+        # Use adaptive smoothing factor based on load change
+        if load_change_pct > self.high_load_change_threshold_pct:
+            # Load changed significantly - use higher smoothing for gradual transitions
+            smoothing = self.adaptive_smoothing_factor
+        else:
+            # Normal smoothing when load is stable
+            smoothing = self.smoothing_factor
+
+        # Apply EMA smoothing
+        smoothed = smoothing * new_value + (1 - smoothing) * old_value
+
+        # Apply rate limiting as safety net
+        if old_value is not None and not np.isnan(old_value):
+            max_change = self.tte_max_change_per_sample
+            smoothed = np.clip(smoothed, old_value - max_change, old_value + max_change)
+
+        # Store current load for next iteration
+        self._previous_load_a = current_load_a
+
+        return smoothed
 
     def _transition_session(self, new_state: str, timestamp: pd.Timestamp, soc: float) -> None:
         """Transition to a new session when state changes"""
