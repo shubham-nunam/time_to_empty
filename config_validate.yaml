@@ -1,0 +1,27 @@
+database:
+  path: battery_patterns.db
+execution:
+  apply_month: ''
+  mode: validate
+  patterns_label: september_2025
+  training_month: 2025-03
+  validate_month: 2025-03
+output:
+  output_dir: output
+  training_data_dir: training_data
+tte_ttf:
+  current_threshold_ma: 50.0
+  current_thresholds_a:
+  - 0.5
+  - 2.0
+  - 5.0
+  decay_rate_window_minutes: 60
+  default_discharge_rate_pct_per_min: 0.1
+  ema_window_minutes: 20
+  min_discharge_rows: 100
+  session_high_confidence_energy_ah: 1.0
+  session_high_confidence_minutes: 15.0
+  session_min_duration_minutes: 0.0
+  session_min_energy_ah: 0.0
+  tte_ttf_smoothing_factor: 0.15
+  usage_window_minutes: 30

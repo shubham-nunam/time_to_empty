@@ -545,8 +545,8 @@ class SimpleTTECalculator:
         if state == 'discharging' and session_valid and self.soc_decay.is_trained:
             tte_empirical = self.soc_decay.estimate_tte_from_rate(current_soc, ema_current, load_class, 'discharging')
             if tte_empirical is not None and 0 < tte_empirical <= self.max_tte_hours:
-                # Apply load-aware smoothing with rate limiting
-                tte_smoothed = self._smooth_with_load_awareness(tte_empirical, self._previous_tte, ema_current)
+                # Apply smoothing with directional rate limiting (prevent TTE increases)
+                tte_smoothed = self._smooth_with_load_awareness(tte_empirical, self._previous_tte, ema_current, state='discharging')
 
                 tte_hours = tte_smoothed
                 self._previous_tte = tte_hours
@@ -578,8 +578,8 @@ class SimpleTTECalculator:
         if state == 'charging' and session_valid and self.soc_decay.is_trained:
             ttf_empirical = self.soc_decay.estimate_tte_from_rate(current_soc, ema_current, load_class, 'charging')
             if ttf_empirical is not None and 0 < ttf_empirical <= self.max_ttf_hours:
-                # Apply load-aware smoothing with rate limiting
-                ttf_smoothed = self._smooth_with_load_awareness(ttf_empirical, self._previous_ttf, ema_current)
+                # Apply smoothing with directional rate limiting (prevent TTF increases)
+                ttf_smoothed = self._smooth_with_load_awareness(ttf_empirical, self._previous_ttf, ema_current, state='charging')
 
                 ttf_hours = ttf_smoothed
                 self._previous_ttf = ttf_hours
@@ -691,40 +691,33 @@ class SimpleTTECalculator:
         return self.smoothing_factor * new_value + (1 - self.smoothing_factor) * old_value
 
     def _smooth_with_load_awareness(self, new_value: Optional[float], old_value: Optional[float],
-                                     current_load_a: float) -> Optional[float]:
+                                     current_load_a: float, state: str = 'discharging') -> Optional[float]:
         """
-        Apply load-aware smoothing with rate limiting to reduce TTE jumps.
+        Apply EMA smoothing with asymmetric rate limiting.
 
-        Two mechanisms:
-        1. Adaptive EMA: Increase smoothing during load spikes (>15% change)
-        2. Rate limiting: Cap max TTE change per sample
+        Allows DECREASES freely (TTE dropping during discharge is always correct).
+        Caps INCREASES conservatively (0.02h per sample = 1.2 min) to prevent
+        false climbs while still allowing legitimate adjustments.
         """
         if new_value is None or np.isnan(new_value):
             return old_value
         if old_value is None or np.isnan(old_value):
             return new_value
 
-        # Detect load change rate
-        if self._previous_load_a is not None and self._previous_load_a > 0.01:
-            load_change_pct = abs(current_load_a - self._previous_load_a) / self._previous_load_a * 100
-        else:
-            load_change_pct = 0
-
-        # Use adaptive smoothing factor based on load change
-        if load_change_pct > self.high_load_change_threshold_pct:
-            # Load changed significantly - use higher smoothing for gradual transitions
-            smoothing = self.adaptive_smoothing_factor
-        else:
-            # Normal smoothing when load is stable
-            smoothing = self.smoothing_factor
-
-        # Apply EMA smoothing
+        # Apply constant EMA smoothing
+        smoothing = self.smoothing_factor
         smoothed = smoothing * new_value + (1 - smoothing) * old_value
 
-        # Apply rate limiting as safety net
+        # Apply asymmetric rate limiting:
+        # - Decreases allowed freely
+        # - Increases capped at 0.02h per sample (1.2 min)
         if old_value is not None and not np.isnan(old_value):
-            max_change = self.tte_max_change_per_sample
-            smoothed = np.clip(smoothed, old_value - max_change, old_value + max_change)
+            change = smoothed - old_value
+            if change > 0:
+                # Increase: cap it conservatively
+                max_increase = 0.02
+                smoothed = old_value + min(change, max_increase)
+            # Decreases allowed freely
 
         # Store current load for next iteration
         self._previous_load_a = current_load_a
