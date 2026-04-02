@@ -1,5 +1,5 @@
-# Data files (large binaries)
-data/
+# Data files (large binaries) - except training/testing data
+# data/ - Commented out to include training and testing data
 inputs/
 
 # Generated outputs
