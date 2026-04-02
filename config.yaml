@@ -4,20 +4,16 @@
 
 execution:
   # Mode selector
-  mode: "train_all_batteries"           # Options: train_all_batteries, apply_battery, validate
+  mode: "apply_battery"           # Options: train_all_batteries, apply_battery, validate
 
   # Pattern label (e.g., month, version)
   # Used when saving patterns to database, or loading for validation
-  patterns_label: "march_2025_60min_window"
-
-  # Pattern label (e.g., month, version)
-  # Used when saving patterns to database, or loading for validation
-  patterns_label: "september_2025"
+  patterns_label: "parquet_training"    # Same label - enables incremental training
 
   # Optional: Filter training data by month (faster training)
   # Format: "YYYY-MM" (e.g., "2025-03" for March 2025)
   # Leave empty to use all available data
-  training_month: "2025-03"             # "" = all data, "2025-03" = March only
+  training_month: ""                    # "" = all data, "2025-03" = March only
 
   # Optional: Filter apply data by month (for apply_battery mode)
   # Format: "YYYY-MM" (e.g., "2025-03" for March 2025)
@@ -37,6 +33,12 @@ database:
   # SQLite database file path
   # Stores all battery patterns (decay rate statistics)
   path: "battery_patterns.db"
+
+# train_all_batteries loads *.parquet from train_dir; apply_battery and validate use *.json from test_dir.
+# Example layouts: train_dir: data/parquet  test_dir: data/json
+data_sources:
+  train_dir: data/training_data
+  test_dir: data/testing_data
 
 tte_ttf:
   current_threshold_ma: 50.0
@@ -73,3 +75,13 @@ tte_ttf:
 
   # Fallback Level 4: default discharge rate when no training data or all fallbacks fail
   default_discharge_rate_pct_per_min: 0.10  # TUNING: reduced from 0.15 to reduce under-prediction
+
+  # SOC thresholds for charger control messages (UI interpretation)
+  # These are NOT hard caps — TTE/TTF can go negative/beyond range
+  # Interpretation happens at UI level based on these thresholds
+  soc_thresholds:
+    # When SOC drops below this, set TTE=0 and trigger "plug in charger" message
+    empty_soc_percent: 5.0                   # Below 5% SOC → battery empty
+
+    # When SOC rises above this, TTF can be negative to trigger "remove charger" message
+    full_soc_percent: 99.0                   # Above 99% SOC → battery full (unplug recommended)

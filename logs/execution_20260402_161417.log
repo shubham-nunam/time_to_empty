@@ -1,0 +1,94 @@
+
+================================================================================
+TTE/TTF Pipeline Started - 2026-04-02 16:14:17
+Log file: E:\time_to_empty_mongo\logs\execution_20260402_161417.log
+================================================================================
+
+================================================================================
+TTE/TTF Pipeline - Mode: APPLY_BATTERY
+================================================================================
+
+================================================================================
+MODE: APPLY_BATTERY (Auto-discover all)
+================================================================================
+
+[DISCOVERED] 1 json file(s) for apply under E:\time_to_empty_mongo\data\testing_data:
+  [OK] LSE18B260667: LSE18B260667.json
+
+================================================================================
+[APPLYING] Battery: LSE18B260667
+================================================================================
+[1] Loading LSE18B260667 data...
+    Loaded 36,677 rows
+[2] Preprocessing...
+    [DTO] Transforming data with dto_ness_parquet...
+    [DTO] Columns after DTO: ['ts', 'ic', 'id', 'lv', 'soc', 'tmp', 'soh', 'strv_1', 'strv_2', 'strv_3', 'strv_4', 'strv_5', 'strv_6', 'strv_7', 'strv_8', 'strv_9', 'strv_10', 'strv_11', 'strv_12', 'strv_13', 'strv_14', 'strv_15', 'strv_16', 'CyCnt', 'FullCap', 'BT1', 'BT2', 'BT3', 'BT4']
+    [TIME] Adding time columns...
+    [STATE] Determining charging/discharging/rest states...
+    [STATE] State distribution:
+      - Charging: 978
+      - Discharging: 2600
+      - Rest: 33099
+      - NaN: 0
+[3] Loading patterns...
+    [OK] [LSE18B260667] Loaded from database (label: parquet_training)
+[4] Estimating TTE/TTF...
+
+[3] Running TTE/TTF estimation (Battery LSE18B260667 (Applied))...
+    [Config] TTE/TTF Parameters:
+      - Current threshold: 50.0 mA
+      - EMA window: 20 minutes
+      - Session min duration: 0.0 minutes
+      - Session min energy: 0.0 Ah
+      - TTE/TTF smoothing: 0.3
+  Processed 2,000 rows
+  Processed 4,000 rows
+  Processed 6,000 rows
+  Processed 8,000 rows
+  Processed 10,000 rows
+  Processed 12,000 rows
+  Processed 14,000 rows
+  Processed 16,000 rows
+  Processed 18,000 rows
+  Processed 20,000 rows
+  Processed 22,000 rows
+  Processed 24,000 rows
+  Processed 26,000 rows
+  Processed 28,000 rows
+  Processed 30,000 rows
+  Processed 32,000 rows
+  Processed 34,000 rows
+  Processed 36,000 rows
+    TTE/TTF estimation time: 4.08s
+
+[4] Results Summary (Battery LSE18B260667 (Applied))
+    Generated: 36,677 rows
+
+    Status Distribution:
+status
+    rest           33099
+    discharging     2600
+    charging         978
+
+    TTE/TTF Coverage:
+    TTE populated: 1,510 / 36,677
+    TTF populated: 555 / 36,677
+
+    Sample Output (first 5 rows):
+                timestamp  voltage_v  current_a status  tte_hours  ttf_hours
+    0 2026-03-30 08:10:12.502    54750.0        0.0   rest        NaN        NaN
+    1 2026-03-30 08:10:17.592    54760.0        0.0   rest        NaN        NaN
+    2 2026-03-30 08:10:17.592    54760.0        0.0   rest        NaN        NaN
+    3 2026-03-30 08:10:22.679    54760.0        0.0   rest        NaN        NaN
+    4 2026-03-30 08:10:22.679    54760.0        0.0   rest        NaN        NaN
+
+[5] Saving Battery LSE18B260667 (Applied) results to E:\time_to_empty_mongo\output\tte_ttf_LSE18B260667_applied.csv...
+    [OK] Saved 36,677 results
+
+================================================================================
+[SUCCESS] All Batteries Applied
+================================================================================
+
+================================================================================
+[SUCCESS] Complete
+================================================================================

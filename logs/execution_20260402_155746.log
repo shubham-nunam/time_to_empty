@@ -1,0 +1,364 @@
+
+================================================================================
+TTE/TTF Pipeline Started - 2026-04-02 15:57:46
+Log file: E:\time_to_empty_mongo\logs\execution_20260402_155746.log
+================================================================================
+
+================================================================================
+TTE/TTF Pipeline - Mode: TRAIN_ALL_BATTERIES
+================================================================================
+
+================================================================================
+MODE: TRAIN_ALL_BATTERIES
+================================================================================
+
+[DISCOVERED] 1 parquet file(s) for training under E:\time_to_empty_mongo\data\training_data:
+  [OK] LSE18B260667: LSE18B260667.parquet
+
+================================================================================
+[TRAINING] Battery: LSE18B260667
+================================================================================
+[1] Loading LSE18B260667 data...
+    Loaded 539,150 rows
+[2] Preprocessing...
+    [DTO] Transforming data with dto_ness_parquet...
+    [DTO] Columns after DTO: ['ts', 'ic', 'id', 'lv', 'soc', 'tmp', 'soh', 'strv_1', 'strv_2', 'strv_3', 'strv_4', 'strv_5', 'strv_6', 'strv_7', 'strv_8', 'strv_9', 'strv_10', 'strv_11', 'strv_12', 'strv_13', 'strv_14', 'strv_15', 'strv_16', 'CyCnt', 'FullCap', 'BT1', 'BT2', 'BT3', 'BT4']
+    [TIME] Adding time columns...
+    [STATE] Determining charging/discharging/rest states...
+    [STATE] State distribution:
+      - Charging: 18832
+      - Discharging: 41822
+      - Rest: 478496
+      - NaN: 0
+[2b] Merging short discharge sessions...
+[3] Training algorithm on LSE18B260667...
+    Learning SOC decay patterns and load profiles...
+    [DECAY_RATE] Learning SOC decay rates from historical data...
+    [DECAY_RATE] Trained in 24ms
+    [DECAY_RATE] Discharge patterns: 26, Charge patterns: 17
+[4] Estimating TTE/TTF for LSE18B260667...
+
+[3] Running TTE/TTF estimation (Battery LSE18B260667)...
+    [Config] TTE/TTF Parameters:
+      - Current threshold: 50.0 mA
+      - EMA window: 20 minutes
+      - Session min duration: 0.0 minutes
+      - Session min energy: 0.0 Ah
+      - TTE/TTF smoothing: 0.3
+  Processed 2,000 rows
+  Processed 4,000 rows
+  Processed 6,000 rows
+  Processed 8,000 rows
+  Processed 10,000 rows
+  Processed 12,000 rows
+  Processed 14,000 rows
+  Processed 16,000 rows
+  Processed 18,000 rows
+  Processed 20,000 rows
+  Processed 22,000 rows
+  Processed 24,000 rows
+  Processed 26,000 rows
+  Processed 28,000 rows
+  Processed 30,000 rows
+  Processed 32,000 rows
+  Processed 34,000 rows
+  Processed 36,000 rows
+  Processed 38,000 rows
+  Processed 40,000 rows
+  Processed 42,000 rows
+  Processed 44,000 rows
+  Processed 46,000 rows
+  Processed 48,000 rows
+  Processed 50,000 rows
+  Processed 52,000 rows
+  Processed 54,000 rows
+  Processed 56,000 rows
+  Processed 58,000 rows
+  Processed 60,000 rows
+  Processed 62,000 rows
+  Processed 64,000 rows
+  Processed 66,000 rows
+  Processed 68,000 rows
+  Processed 70,000 rows
+  Processed 72,000 rows
+  Processed 74,000 rows
+  Processed 76,000 rows
+  Processed 78,000 rows
+  Processed 80,000 rows
+  Processed 82,000 rows
+  Processed 84,000 rows
+  Processed 86,000 rows
+  Processed 88,000 rows
+  Processed 90,000 rows
+  Processed 92,000 rows
+  Processed 94,000 rows
+  Processed 96,000 rows
+  Processed 98,000 rows
+  Processed 100,000 rows
+  Processed 102,000 rows
+  Processed 104,000 rows
+  Processed 106,000 rows
+  Processed 108,000 rows
+  Processed 110,000 rows
+  Processed 112,000 rows
+  Processed 114,000 rows
+  Processed 116,000 rows
+  Processed 118,000 rows
+  Processed 120,000 rows
+  Processed 122,000 rows
+  Processed 124,000 rows
+  Processed 126,000 rows
+  Processed 128,000 rows
+  Processed 130,000 rows
+  Processed 132,000 rows
+  Processed 134,000 rows
+  Processed 136,000 rows
+  Processed 138,000 rows
+  Processed 140,000 rows
+  Processed 142,000 rows
+  Processed 144,000 rows
+  Processed 146,000 rows
+  Processed 148,000 rows
+  Processed 150,000 rows
+  Processed 152,000 rows
+  Processed 154,000 rows
+  Processed 156,000 rows
+  Processed 158,000 rows
+  Processed 160,000 rows
+  Processed 162,000 rows
+  Processed 164,000 rows
+  Processed 166,000 rows
+  Processed 168,000 rows
+  Processed 170,000 rows
+  Processed 172,000 rows
+  Processed 174,000 rows
+  Processed 176,000 rows
+  Processed 178,000 rows
+  Processed 180,000 rows
+  Processed 182,000 rows
+  Processed 184,000 rows
+  Processed 186,000 rows
+  Processed 188,000 rows
+  Processed 190,000 rows
+  Processed 192,000 rows
+  Processed 194,000 rows
+  Processed 196,000 rows
+  Processed 198,000 rows
+  Processed 200,000 rows
+  Processed 202,000 rows
+  Processed 204,000 rows
+  Processed 206,000 rows
+  Processed 208,000 rows
+  Processed 210,000 rows
+  Processed 212,000 rows
+  Processed 214,000 rows
+  Processed 216,000 rows
+  Processed 218,000 rows
+  Processed 220,000 rows
+  Processed 222,000 rows
+  Processed 224,000 rows
+  Processed 226,000 rows
+  Processed 228,000 rows
+  Processed 230,000 rows
+  Processed 232,000 rows
+  Processed 234,000 rows
+  Processed 236,000 rows
+  Processed 238,000 rows
+  Processed 240,000 rows
+  Processed 242,000 rows
+  Processed 244,000 rows
+  Processed 246,000 rows
+  Processed 248,000 rows
+  Processed 250,000 rows
+  Processed 252,000 rows
+  Processed 254,000 rows
+  Processed 256,000 rows
+  Processed 258,000 rows
+  Processed 260,000 rows
+  Processed 262,000 rows
+  Processed 264,000 rows
+  Processed 266,000 rows
+  Processed 268,000 rows
+  Processed 270,000 rows
+  Processed 272,000 rows
+  Processed 274,000 rows
+  Processed 276,000 rows
+  Processed 278,000 rows
+  Processed 280,000 rows
+  Processed 282,000 rows
+  Processed 284,000 rows
+  Processed 286,000 rows
+  Processed 288,000 rows
+  Processed 290,000 rows
+  Processed 292,000 rows
+  Processed 294,000 rows
+  Processed 296,000 rows
+  Processed 298,000 rows
+  Processed 300,000 rows
+  Processed 302,000 rows
+  Processed 304,000 rows
+  Processed 306,000 rows
+  Processed 308,000 rows
+  Processed 310,000 rows
+  Processed 312,000 rows
+  Processed 314,000 rows
+  Processed 316,000 rows
+  Processed 318,000 rows
+  Processed 320,000 rows
+  Processed 322,000 rows
+  Processed 324,000 rows
+  Processed 326,000 rows
+  Processed 328,000 rows
+  Processed 330,000 rows
+  Processed 332,000 rows
+  Processed 334,000 rows
+  Processed 336,000 rows
+  Processed 338,000 rows
+  Processed 340,000 rows
+  Processed 342,000 rows
+  Processed 344,000 rows
+  Processed 346,000 rows
+  Processed 348,000 rows
+  Processed 350,000 rows
+  Processed 352,000 rows
+  Processed 354,000 rows
+  Processed 356,000 rows
+  Processed 358,000 rows
+  Processed 360,000 rows
+  Processed 362,000 rows
+  Processed 364,000 rows
+  Processed 366,000 rows
+  Processed 368,000 rows
+  Processed 370,000 rows
+  Processed 372,000 rows
+  Processed 374,000 rows
+  Processed 376,000 rows
+  Processed 378,000 rows
+  Processed 380,000 rows
+  Processed 382,000 rows
+  Processed 384,000 rows
+  Processed 386,000 rows
+  Processed 388,000 rows
+  Processed 390,000 rows
+  Processed 392,000 rows
+  Processed 394,000 rows
+  Processed 396,000 rows
+  Processed 398,000 rows
+  Processed 400,000 rows
+  Processed 402,000 rows
+  Processed 404,000 rows
+  Processed 406,000 rows
+  Processed 408,000 rows
+  Processed 410,000 rows
+  Processed 412,000 rows
+  Processed 414,000 rows
+  Processed 416,000 rows
+  Processed 418,000 rows
+  Processed 420,000 rows
+  Processed 422,000 rows
+  Processed 424,000 rows
+  Processed 426,000 rows
+  Processed 428,000 rows
+  Processed 430,000 rows
+  Processed 432,000 rows
+  Processed 434,000 rows
+  Processed 436,000 rows
+  Processed 438,000 rows
+  Processed 440,000 rows
+  Processed 442,000 rows
+  Processed 444,000 rows
+  Processed 446,000 rows
+  Processed 448,000 rows
+  Processed 450,000 rows
+  Processed 452,000 rows
+  Processed 454,000 rows
+  Processed 456,000 rows
+  Processed 458,000 rows
+  Processed 460,000 rows
+  Processed 462,000 rows
+  Processed 464,000 rows
+  Processed 466,000 rows
+  Processed 468,000 rows
+  Processed 470,000 rows
+  Processed 472,000 rows
+  Processed 474,000 rows
+  Processed 476,000 rows
+  Processed 478,000 rows
+  Processed 480,000 rows
+  Processed 482,000 rows
+  Processed 484,000 rows
+  Processed 486,000 rows
+  Processed 488,000 rows
+  Processed 490,000 rows
+  Processed 492,000 rows
+  Processed 494,000 rows
+  Processed 496,000 rows
+  Processed 498,000 rows
+  Processed 500,000 rows
+  Processed 502,000 rows
+  Processed 504,000 rows
+  Processed 506,000 rows
+  Processed 508,000 rows
+  Processed 510,000 rows
+  Processed 512,000 rows
+  Processed 514,000 rows
+  Processed 516,000 rows
+  Processed 518,000 rows
+  Processed 520,000 rows
+  Processed 522,000 rows
+  Processed 524,000 rows
+  Processed 526,000 rows
+  Processed 528,000 rows
+  Processed 530,000 rows
+  Processed 532,000 rows
+  Processed 534,000 rows
+  Processed 536,000 rows
+  Processed 538,000 rows
+    TTE/TTF estimation time: 43.94s
+
+[4] Results Summary (Battery LSE18B260667)
+    Generated: 539,150 rows
+
+    Status Distribution:
+status
+    rest           478496
+    discharging     41822
+    charging        18832
+
+    TTE/TTF Coverage:
+    TTE populated: 41,822 / 539,150
+    TTF populated: 10,756 / 539,150
+
+    Sample Output (first 5 rows):
+                         timestamp  voltage_v  current_a status  tte_hours  ttf_hours
+    0 2026-02-28 18:30:04.748000+00:00    54770.0        0.0   rest        NaN        NaN
+    1 2026-02-28 18:30:09.945000+00:00    54780.0        0.0   rest        NaN        NaN
+    2 2026-02-28 18:30:15.035000+00:00    54770.0        0.0   rest        NaN        NaN
+    3 2026-02-28 18:30:20.125000+00:00    54770.0        0.0   rest        NaN        NaN
+    4 2026-02-28 18:30:25.211000+00:00    54770.0        0.0   rest        NaN        NaN
+
+[5] Saving Battery LSE18B260667 results to E:\time_to_empty_mongo\output\.tte_ttf_LSE18B260667_tmp.csv...
+    [OK] Saved 539,150 results
+[5] Saving patterns for LSE18B260667...
+    [LSE18B260667] Merged with existing patterns (label: parquet_training)
+              Old + new patterns combined with weighted averaging
+
+[GLOBAL MODEL] Aggregating patterns across all batteries...
+    [OK] Global fleet model saved (26 discharge patterns)
+
+================================================================================
+[SUCCESS] All Batteries Trained
+================================================================================
+
+[AVAILABLE BATTERIES]
+  [OK] LSE18B260667: LSE18B260667.parquet (6.5 MB)
+
+[SAVED PATTERNS] (in database)
+  LSE18B260667:
+    - parquet_training
+  __global__:
+    - parquet_training
+
+================================================================================
+[SUCCESS] Complete
+================================================================================

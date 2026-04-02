@@ -31,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent.parent / 'utils'))
 
 from tte_ttf_algorithm import TTETTFCalculator
-from battery_manager import BatteryManager
+from battery_manager import BatteryManager, load_battery_table
 from db import DatabaseManager
 from dto_classes import dto_ness_parquet
 
@@ -44,6 +44,17 @@ def load_config():
 
     with open(config_file, 'r') as f:
         return yaml.safe_load(f)
+
+
+def data_source_dirs(config: dict, project_root: Path):
+    """
+    Training uses parquet (default: data_sources.train_dir); apply/validate use json (test_dir).
+    If omitted, both default to project `data/` and discovery filters by file extension.
+    """
+    ds = config.get('data_sources') or {}
+    train_dir = project_root / ds.get('train_dir', 'data')
+    test_dir = project_root / ds.get('test_dir', 'data')
+    return train_dir, test_dir
 
 
 def get_load_status_vectorized(current_series):
@@ -247,6 +258,24 @@ def estimate_and_save(calculator: TTETTFCalculator, data_df: pd.DataFrame, confi
 
     results_df['average_usage_kw'] = rolling_power_kw.values.round(6)
 
+    # Add charger control messages based on SOC thresholds
+    soc_thresholds = tte_params.get('soc_thresholds', {})
+    empty_soc = soc_thresholds.get('empty_soc_percent', 5.0)
+    full_soc = soc_thresholds.get('full_soc_percent', 99.0)
+
+    def get_charger_action(row):
+        """Determine charger action based on SOC thresholds"""
+        soc = row.get('soc')
+        if soc is None or pd.isna(soc):
+            return None
+        if soc < empty_soc:
+            return 'PLUG_CHARGER'
+        elif soc > full_soc:
+            return 'UNPLUG_CHARGER'
+        return None
+
+    results_df['charger_action'] = results_df.apply(get_charger_action, axis=1)
+
     # Summary
     print(f"\n[4] Results Summary ({label})")
     print(f"    Generated: {len(results_df):,} rows")
@@ -354,7 +383,7 @@ def run_train_all_batteries(config: dict, project_root: Path):
     print("MODE: TRAIN_ALL_BATTERIES")
     print("="*80)
 
-    data_dir = project_root / "data"
+    train_dir, _ = data_source_dirs(config, project_root)
     output_dir = project_root / config['output']['output_dir']
     training_data_dir = project_root / config['output']['training_data_dir']
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -362,15 +391,15 @@ def run_train_all_batteries(config: dict, project_root: Path):
 
     # Get database path from config or use default
     db_path = project_root / config.get('database', {}).get('path', 'battery_patterns.db')
-    battery_mgr = BatteryManager(str(data_dir), str(training_data_dir), str(db_path))
+    battery_mgr = BatteryManager(str(train_dir), str(db_path))
 
     # Discover all batteries
-    batteries = battery_mgr.discover_batteries()
+    batteries = battery_mgr.discover_batteries("*.parquet")
     if not batteries:
-        print("[ERROR] No battery files found in data/ folder")
+        print(f"[ERROR] No .parquet battery files found in {train_dir}")
         return
 
-    print(f"\n[DISCOVERED] {len(batteries)} battery files:")
+    print(f"\n[DISCOVERED] {len(batteries)} parquet file(s) for training under {train_dir}:")
     for battery_id, file_path in batteries.items():
         print(f"  [OK] {battery_id}: {file_path.name}")
 
@@ -385,7 +414,7 @@ def run_train_all_batteries(config: dict, project_root: Path):
 
         # Load data
         print(f"[1] Loading {battery_id} data...")
-        data_df = pd.read_parquet(data_file)
+        data_df = load_battery_table(data_file)
         print(f"    Loaded {len(data_df):,} rows")
 
         # Filter by month if specified
@@ -412,13 +441,16 @@ def run_train_all_batteries(config: dict, project_root: Path):
 
         # Train
         print(f"[3] Training algorithm on {battery_id}...")
+        soc_thresholds = tte_cfg.get('soc_thresholds', {})
         calculator = TTETTFCalculator(
             session_min_duration_minutes=tte_cfg.get('session_min_duration_minutes', 15.0),
             session_min_energy_ah=tte_cfg.get('session_min_energy_ah', 1.0),
             tte_ttf_smoothing_factor=tte_cfg.get('tte_ttf_smoothing_factor', 0.15),
             high_load_change_threshold_pct=tte_cfg.get('high_load_change_threshold_pct', 15.0),
             adaptive_smoothing_factor=tte_cfg.get('adaptive_smoothing_factor', 0.35),
-            tte_max_change_per_sample=tte_cfg.get('tte_max_change_per_sample', 0.05)
+            tte_max_change_per_sample=tte_cfg.get('tte_max_change_per_sample', 0.05),
+            empty_soc_percent=soc_thresholds.get('empty_soc_percent', 5.0),
+            full_soc_percent=soc_thresholds.get('full_soc_percent', 99.0)
         )
 
         print(f"    Learning SOC decay patterns and load profiles...")
@@ -479,7 +511,7 @@ def run_apply_battery(config: dict, project_root: Path):
     print("MODE: APPLY_BATTERY (Auto-discover all)")
     print("="*80)
 
-    data_dir = project_root / "data"
+    _, test_dir = data_source_dirs(config, project_root)
     output_dir = project_root / config['output']['output_dir']
     training_data_dir = project_root / config['output']['training_data_dir']
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -487,15 +519,15 @@ def run_apply_battery(config: dict, project_root: Path):
 
     # Get database path from config or use default
     db_path = project_root / config.get('database', {}).get('path', 'battery_patterns.db')
-    battery_mgr = BatteryManager(str(data_dir), str(training_data_dir), str(db_path))
+    battery_mgr = BatteryManager(str(test_dir), str(db_path))
 
     # Discover all batteries
-    batteries = battery_mgr.discover_batteries()
+    batteries = battery_mgr.discover_batteries("*.json")
     if not batteries:
-        print("[ERROR] No battery files found in data/ folder")
+        print(f"[ERROR] No .json battery files found in {test_dir}")
         return
 
-    print(f"\n[DISCOVERED] {len(batteries)} batteries in data/:")
+    print(f"\n[DISCOVERED] {len(batteries)} json file(s) for apply under {test_dir}:")
     for battery_id, file_path in batteries.items():
         print(f"  [OK] {battery_id}: {file_path.name}")
 
@@ -511,7 +543,7 @@ def run_apply_battery(config: dict, project_root: Path):
         # Load data
         print(f"[1] Loading {battery_id} data...")
         try:
-            data_df = pd.read_parquet(data_file)
+            data_df = load_battery_table(data_file)
             print(f"    Loaded {len(data_df):,} rows")
 
             # Filter by month if specified
@@ -536,6 +568,7 @@ def run_apply_battery(config: dict, project_root: Path):
 
         # Load patterns
         print(f"[3] Loading patterns...")
+        soc_thresholds = tte_cfg.get('soc_thresholds', {})
         calculator = TTETTFCalculator(
             session_min_duration_minutes=tte_cfg.get('session_min_duration_minutes', 15.0),
             session_min_energy_ah=tte_cfg.get('session_min_energy_ah', 1.0),
@@ -545,7 +578,9 @@ def run_apply_battery(config: dict, project_root: Path):
             session_high_confidence_energy_ah=tte_cfg.get('session_high_confidence_energy_ah', 1.0),
             high_load_change_threshold_pct=tte_cfg.get('high_load_change_threshold_pct', 15.0),
             adaptive_smoothing_factor=tte_cfg.get('adaptive_smoothing_factor', 0.35),
-            tte_max_change_per_sample=tte_cfg.get('tte_max_change_per_sample', 0.05)
+            tte_max_change_per_sample=tte_cfg.get('tte_max_change_per_sample', 0.05),
+            empty_soc_percent=soc_thresholds.get('empty_soc_percent', 5.0),
+            full_soc_percent=soc_thresholds.get('full_soc_percent', 99.0)
         )
 
         default_rate = tte_cfg.get('default_discharge_rate_pct_per_min', 0.15)
@@ -1095,20 +1130,20 @@ def run_validate(config: dict, project_root: Path):
     validation_dir = output_dir / 'validation'
     validation_dir.mkdir(parents=True, exist_ok=True)
 
+    _, test_dir = data_source_dirs(config, project_root)
     battery_mgr = BatteryManager(
-        data_dir=str(project_root / "data"),
-        patterns_dir=str(project_root / config['output'].get('training_data_dir', 'training_data')),
+        data_dir=str(test_dir),
         db_path=str(project_root / config['database'].get('path', 'battery_patterns.db'))
     )
 
     print("\n[VALIDATION] Starting TTE/TTF validation...")
 
-    batteries = battery_mgr.discover_batteries()
+    batteries = battery_mgr.discover_batteries("*.json")
     if not batteries:
-        print("[ERROR] No battery files found in data/ folder")
+        print(f"[ERROR] No .json battery files found in {test_dir}")
         return
 
-    print(f"\n[DISCOVERED] {len(batteries)} batteries in data/:")
+    print(f"\n[DISCOVERED] {len(batteries)} json file(s) for validation under {test_dir}:")
     for battery_id, file_path in batteries.items():
         print(f"  [OK] {battery_id}: {file_path.name}")
 
@@ -1122,7 +1157,7 @@ def run_validate(config: dict, project_root: Path):
         # Load data
         print(f"[1] Loading {battery_id} data...")
         try:
-            data_df = pd.read_parquet(data_file)
+            data_df = load_battery_table(data_file)
             print(f"    Loaded {len(data_df):,} rows")
 
             if validate_month:

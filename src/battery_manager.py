@@ -1,7 +1,6 @@
 """
 Battery Manager - Handle multiple batteries in data folder
 ===========================================================
-
 Supports workflows with multiple battery packs:
 - Auto-discover all battery files in data folder
 - Train on each battery separately
@@ -9,16 +8,108 @@ Supports workflows with multiple battery packs:
 - Load correct battery patterns for testing/apply
 """
 
+from __future__ import annotations
+import json
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 import pandas as pd
 from db import DatabaseManager
+from data_adapter import load_json_battery_data
+
+
+def unwrap_mongo_json_value(value: Any) -> Any:
+    """Flatten MongoDB Extended JSON scalars; leave plain values unchanged."""
+    if not isinstance(value, dict):
+        return value
+    if "$oid" in value:
+        return str(value["$oid"])
+    if "$numberLong" in value:
+        return int(value["$numberLong"])
+    if "$numberInt" in value:
+        return int(value["$numberInt"])
+    if "$numberDouble" in value:
+        return float(value["$numberDouble"])
+    if "$date" in value:
+        d = value["$date"]
+        if isinstance(d, dict) and "$numberLong" in d:
+            return int(d["$numberLong"])
+        return d
+    return value
+
+
+def records_from_mongo_json_array(raw: Union[list, dict]) -> List[Dict[str, Any]]:
+    if isinstance(raw, dict):
+        raw = [raw]
+    out: List[Dict[str, Any]] = []
+    for rec in raw:
+        if not isinstance(rec, dict):
+            continue
+        row = {k: unwrap_mongo_json_value(v) for k, v in rec.items()}
+        out.append(row)
+    return out
+
+
+def normalize_ness_battery_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Align export quirks so dto_ness_parquet sees the same semantics as notebook parquet.
+
+    - PackCapacity -> FullCap (parquet/JSON naming)
+    - ts -> timestamp (JSON uses ts for epoch ms)
+    - CreatedAt -> timestamp when timestamp/ts missing (epoch ms), then drop CreatedAt
+    - Normalize numeric columns to be consistent across Parquet/JSON sources
+    """
+    df = df.copy()
+    if "FullCap" not in df.columns and "PackCapacity" in df.columns:
+        df = df.rename(columns={"PackCapacity": "FullCap"})
+    if "timestamp" not in df.columns and "ts" in df.columns:
+        df = df.rename(columns={"ts": "timestamp"})
+    if "timestamp" not in df.columns and "CreatedAt" in df.columns:
+        ts_ms = (pd.to_datetime(df["CreatedAt"], utc=True).astype("int64") // 1_000_000).astype("int64")
+        df["timestamp"] = ts_ms
+
+    # Drop CreatedAt if it was used to create timestamp (avoid duplicate metadata columns)
+    if "CreatedAt" in df.columns:
+        df = df.drop(columns=["CreatedAt"])
+
+    # Ensure numeric columns are properly typed for both Parquet and JSON sources
+    numeric_cols = [
+        "timestamp", "Tamb", "SoC", "Ip", "BmsErr", "SoH", "Battstate", "BmsID", "TMax",
+        "Vp", "BalStat", "CyCnt", "HwErr", "V1", "V2", "V3", "V4", "BT1",
+        "V5", "V6", "BT3", "V7", "BT2", "V8", "V9", "BT4", "IpMax",
+        "TemperatureProbes", "FullCap", "BattWarning", "PwrT", "IpMin",
+        "MOSstate", "V10", "V12", "V11", "V14", "TMin", "V13", "V16", "V15",
+        "CellNumber"
+    ]
+    for col in numeric_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    return df
+
+
+def load_battery_table(path: Union[str, Path]) -> pd.DataFrame:
+    """
+    Load a battery export from .parquet (training) or .json (Mongo-style test dumps).
+
+    JSON loading uses data_adapter layer to normalize MongoDB Extended JSON format.
+    """
+    path = Path(path)
+    suffix = path.suffix.lower()
+    if suffix == ".parquet":
+        df = pd.read_parquet(path)
+    elif suffix == ".json":
+        # Use adapter layer to load and normalize JSON data
+        df = load_json_battery_data(path)
+    else:
+        raise ValueError(f"Unsupported battery data format: {path} (use .parquet or .json)")
+
+    return normalize_ness_battery_columns(df)
 
 
 class BatteryManager:
     """Manages multiple battery data and patterns."""
 
-    def __init__(self, data_dir: str = "data", patterns_dir: str = "training_data", db_path: str = "battery_patterns.db"):
+    def __init__(self, data_dir: str = "data", db_path: str = "battery_patterns.db"):
         """
         Initialize battery manager.
 
@@ -26,14 +117,10 @@ class BatteryManager:
         -----------
         data_dir : str
             Directory containing parquet files (one per battery)
-        patterns_dir : str
-            Directory to store battery patterns (kept for backwards compatibility)
         db_path : str
-            Path to SQLite database file
+            Path to SQLite database file for pattern storage
         """
         self.data_dir = Path(data_dir)
-        self.patterns_dir = Path(patterns_dir)
-        self.patterns_dir.mkdir(parents=True, exist_ok=True)
         self.db = DatabaseManager(db_path)
 
     def _create_default_decay_stats(self, default_rate: float) -> Tuple[Dict, Dict]:
@@ -71,9 +158,14 @@ class BatteryManager:
         # Return same defaults for both discharge and charge (conservative fallback)
         return default_stats, default_stats
 
-    def discover_batteries(self) -> Dict[str, Path]:
+    def discover_batteries(self, glob_pattern: str = "*.parquet") -> Dict[str, Path]:
         """
         Auto-discover all battery files in data folder.
+
+        Parameters:
+        -----------
+        glob_pattern : str
+            e.g. "*.parquet" for training exports, "*.json" for Mongo test dumps
 
         Returns:
         --------
@@ -86,40 +178,26 @@ class BatteryManager:
             print(f"[ERROR] Data directory not found: {self.data_dir}")
             return batteries
 
-        parquet_files = list(self.data_dir.glob("*.parquet"))
+        files = list(self.data_dir.glob(glob_pattern))
 
-        if not parquet_files:
-            print(f"[WARN] No parquet files found in {self.data_dir}")
+        if not files:
+            print(f"[WARN] No files matching {glob_pattern!r} in {self.data_dir}")
             return batteries
 
-        for file in sorted(parquet_files):
+        for file in sorted(files):
             # Extract battery ID from filename (e.g., SE0100000092.parquet)
             battery_id = file.stem
             batteries[battery_id] = file
 
         return batteries
 
-    def get_battery_pattern_path(self, battery_id: str, label: str = "") -> Path:
-        """
-        Get pattern directory path for a battery.
-
-        Parameters:
-        -----------
-        battery_id : str
-            Battery ID (e.g., SE0100000092)
-        label : str
-            Optional label (e.g., "september_2025")
-
-        Returns:
-        --------
-        Path : Pattern directory path
-        """
-        pattern_name = f"{battery_id}_{label}" if label else battery_id
-        return self.patterns_dir / pattern_name
-
-    def save_battery_patterns(self, battery_id: str, calculator_obj, label: str = "") -> Path:
+    def save_battery_patterns(self, battery_id: str, calculator_obj, label: str = "") -> None:
         """
         Save patterns for a specific battery to SQLite database.
+
+        Implements incremental training: if patterns exist, merge with weighted averaging.
+        Otherwise, create new patterns. This enables combining multiple training runs
+        as if trained on combined data.
 
         Parameters:
         -----------
@@ -129,17 +207,13 @@ class BatteryManager:
             Trained calculator
         label : str
             Optional label (e.g., "september_2025")
-
-        Returns:
-        --------
-        Path : Pattern directory path (kept for backwards compatibility)
         """
         # Extract decay rate statistics from calculator
         soc_decay = getattr(calculator_obj, 'soc_decay', None)
 
         if soc_decay is None:
             print(f"    [{battery_id}] [ERROR] No SOC decay analyzer found")
-            return self.get_battery_pattern_path(battery_id, label)
+            return
 
         discharge_stats = getattr(soc_decay, 'discharge_stats', {})
         charge_stats = getattr(soc_decay, 'charge_stats', {})
@@ -151,15 +225,18 @@ class BatteryManager:
             "tte_ttf_smoothing_factor": getattr(calculator_obj, 'tte_ttf_smoothing_factor', 0.15)
         }
 
-        # Save to database
-        self.db.save_patterns(battery_id, discharge_stats, charge_stats, label, metadata)
-        print(f"    [{battery_id}] Saved to database (label: {label or 'default'})")
+        # Check if patterns already exist for this battery+label
+        existing_discharge, existing_charge, _ = self.db.load_patterns(battery_id, label)
 
-        # Keep pattern_dir for backwards compatibility
-        pattern_dir = self.get_battery_pattern_path(battery_id, label)
-        pattern_dir.mkdir(parents=True, exist_ok=True)
-
-        return pattern_dir
+        if existing_discharge is not None and existing_charge is not None:
+            # Patterns exist: merge with weighted averaging (incremental training)
+            self.db.merge_patterns(battery_id, discharge_stats, charge_stats, label, metadata)
+            print(f"    [{battery_id}] Merged with existing patterns (label: {label or 'default'})")
+            print(f"              Old + new patterns combined with weighted averaging")
+        else:
+            # No existing patterns: save as new
+            self.db.save_patterns(battery_id, discharge_stats, charge_stats, label, metadata)
+            print(f"    [{battery_id}] Saved new patterns to database (label: {label or 'default'})")
 
     def load_battery_patterns(self, battery_id: str, calculator_obj,
                             label: str = "", default_discharge_rate: Optional[float] = None) -> bool:

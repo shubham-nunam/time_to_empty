@@ -285,6 +285,7 @@ class SOCDecayRateAnalyzer:
         Estimate TTE using historical decay rates.
 
         TTE = remaining_SOC / decay_rate (where decay_rate is %/min, result in hours)
+        Uses rate_mean consistently for stable, predictable fallback behavior.
         """
         if not self.is_trained:
             return None
@@ -305,22 +306,22 @@ class SOCDecayRateAnalyzer:
         decay_rate = None
 
         if key in stats_dict:
-            decay_rate = stats_dict[key]['rate_median']
+            decay_rate = stats_dict[key]['rate_mean']
         else:
             # Fallback 1: same SOC and load, different current range
             matching_keys = [k for k in stats_dict if k[0] == soc_window and k[1] == load_class]
             if matching_keys:
-                rates = [stats_dict[k]['rate_median'] for k in matching_keys]
+                rates = [stats_dict[k]['rate_mean'] for k in matching_keys]
                 decay_rate = float(np.mean(rates))
             else:
                 # Fallback 2: same load, any SOC
                 matching_keys = [k for k in stats_dict if k[1] == load_class]
                 if matching_keys:
-                    rates = [stats_dict[k]['rate_median'] for k in matching_keys]
+                    rates = [stats_dict[k]['rate_mean'] for k in matching_keys]
                     decay_rate = float(np.mean(rates))
                 else:
                     # Fallback 3: any pattern in this state
-                    rates = [v['rate_median'] for v in stats_dict.values()]
+                    rates = [v['rate_mean'] for v in stats_dict.values()]
                     if rates:
                         decay_rate = float(np.mean(rates))
 
@@ -395,7 +396,9 @@ class SimpleTTECalculator:
                  session_high_confidence_energy_ah: float = 1.0,
                  high_load_change_threshold_pct: float = 15.0,
                  adaptive_smoothing_factor: float = 0.35,
-                 tte_max_change_per_sample: float = 0.05):
+                 tte_max_change_per_sample: float = 0.05,
+                 empty_soc_percent: float = 5.0,
+                 full_soc_percent: float = 99.0):
         """
         Parameters:
         -----------
@@ -405,6 +408,8 @@ class SimpleTTECalculator:
         current_thresholds : list of current range thresholds in Amperes (default [0.5, 2.0, 5.0])
         session_high_confidence_minutes : session duration threshold for high confidence (default 15.0)
         session_high_confidence_energy_ah : session energy threshold for high confidence (default 1.0)
+        empty_soc_percent : SOC below this value triggers TTE=0 (plug charger message), default 5%
+        full_soc_percent : SOC above this value allows negative TTF (unplug charger message), default 99%
         """
         self.session_min_duration_minutes = session_min_duration_minutes
         self.session_min_energy_ah = session_min_energy_ah
@@ -414,6 +419,8 @@ class SimpleTTECalculator:
         self.high_load_change_threshold_pct = high_load_change_threshold_pct
         self.adaptive_smoothing_factor = adaptive_smoothing_factor
         self.tte_max_change_per_sample = tte_max_change_per_sample
+        self.empty_soc_percent = empty_soc_percent
+        self.full_soc_percent = full_soc_percent
 
         self.soc_decay = SOCDecayRateAnalyzer(soc_step=5, current_thresholds=current_thresholds)
         self.load_classifier = LoadClassifier(window_samples=30)
@@ -543,13 +550,18 @@ class SimpleTTECalculator:
 
         # TTE: Empirical decay rate for discharge
         if state == 'discharging' and session_valid and self.soc_decay.is_trained:
-            tte_empirical = self.soc_decay.estimate_tte_from_rate(current_soc, ema_current, load_class, 'discharging')
-            if tte_empirical is not None and 0 < tte_empirical <= self.max_tte_hours:
-                # Apply smoothing with directional rate limiting (prevent TTE increases)
-                tte_smoothed = self._smooth_with_load_awareness(tte_empirical, self._previous_tte, ema_current, state='discharging')
+            # SOC threshold: if below empty threshold, TTE = 0 (trigger "plug charger" at UI level)
+            if current_soc < self.empty_soc_percent:
+                tte_hours = 0.0
+                confidence = 'low'  # low confidence when at critical SOC
+            else:
+                tte_empirical = self.soc_decay.estimate_tte_from_rate(current_soc, ema_current, load_class, 'discharging')
+                if tte_empirical is not None and 0 < tte_empirical <= self.max_tte_hours:
+                    # Apply smoothing with directional rate limiting (prevent TTE increases)
+                    tte_smoothed = self._smooth_with_load_awareness(tte_empirical, self._previous_tte, ema_current, state='discharging')
 
-                tte_hours = tte_smoothed
-                self._previous_tte = tte_hours
+                    tte_hours = tte_smoothed
+                    self._previous_tte = tte_hours
 
                 # Determine confidence based on session thresholds (relaxed and strict)
                 session_duration = self._current_session.duration_minutes(timestamp)
@@ -576,13 +588,28 @@ class SimpleTTECalculator:
 
         # TTF: Empirical decay rate for charge
         if state == 'charging' and session_valid and self.soc_decay.is_trained:
-            ttf_empirical = self.soc_decay.estimate_tte_from_rate(current_soc, ema_current, load_class, 'charging')
-            if ttf_empirical is not None and 0 < ttf_empirical <= self.max_ttf_hours:
-                # Apply smoothing with directional rate limiting (prevent TTF increases)
-                ttf_smoothed = self._smooth_with_load_awareness(ttf_empirical, self._previous_ttf, ema_current, state='charging')
+            # SOC threshold: if above full threshold, compute negative TTF (trigger "unplug charger" at UI level)
+            if current_soc > self.full_soc_percent:
+                # Allow negative TTF by computing overshoot time from full SOC
+                # TTF = -(SOC - full_soc_percent) / charge_rate
+                ttf_empirical = self.soc_decay.estimate_tte_from_rate(current_soc, ema_current, load_class, 'charging')
+                if ttf_empirical is not None:
+                    # Compute how much we've overshot the full threshold
+                    overshoot_soc = current_soc - self.full_soc_percent
+                    if ttf_empirical > 0:
+                        # Negative TTF: how long we've been "overcharging" past full
+                        ttf_smoothed = self._smooth_with_load_awareness(-overshoot_soc / (ttf_empirical * 60.0), self._previous_ttf, ema_current, state='charging')
+                        ttf_hours = ttf_smoothed
+                        self._previous_ttf = ttf_hours
+                    confidence = 'low'  # low confidence at critical SOC
+            else:
+                ttf_empirical = self.soc_decay.estimate_tte_from_rate(current_soc, ema_current, load_class, 'charging')
+                if ttf_empirical is not None and 0 < ttf_empirical <= self.max_ttf_hours:
+                    # Apply smoothing with directional rate limiting (prevent TTF increases)
+                    ttf_smoothed = self._smooth_with_load_awareness(ttf_empirical, self._previous_ttf, ema_current, state='charging')
 
-                ttf_hours = ttf_smoothed
-                self._previous_ttf = ttf_hours
+                    ttf_hours = ttf_smoothed
+                    self._previous_ttf = ttf_hours
 
                 # Determine confidence based on session thresholds (relaxed and strict)
                 session_duration = self._current_session.duration_minutes(timestamp)
